@@ -31,7 +31,7 @@ jobs:
 
       # ATTENTION : Modifie le --base-href selon ton cas (voir l'étape 4)
       - name: Build web
-        run: flutter build web --release --base-href "/"
+        run: flutter build web --release --base-href "/invest_app/"
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
