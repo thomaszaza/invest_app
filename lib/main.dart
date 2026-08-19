@@ -321,7 +321,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Mes Positions', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Positions', style: TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.black,
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _loadPositions)
@@ -1087,7 +1087,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       child: Scaffold(
         backgroundColor: Colors.black, // <-- CORRECTION 1 : Fond noir au lieu de grey[100]
         appBar: AppBar(
-          title: const Text('Mon Portfolio', style: TextStyle(fontWeight: FontWeight.bold)),
+          title: const Text('Portfolio', style: TextStyle(fontWeight: FontWeight.bold)),
           backgroundColor: Colors.black, // <-- CORRECTION 2 : Bandeau noir au lieu de blueAccent
           foregroundColor: Colors.white,
           actions: [
