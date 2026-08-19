@@ -1,23 +1,33 @@
 name: zaza_invest_mobile
 description: "A new Flutter project."
-... (le reste de ton code en haut) ...
+publish_to: 'none' 
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.0
 
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.0
-  fl_chart: ^0.66.0
-  # ... tes autres dépendances ...
+  supabase_flutter: ^2.8.0
+  cupertino_icons: ^1.0.8
+  fl_chart: ^1.2.0
+  http: ^1.6.0
+  html: ^0.15.6
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_launcher_icons: "^0.13.1" # Vérifie bien que c'est ici
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
-# --- CETTE PARTIE DOIT ÊTRE TOUT EN BAS, ALIGNÉE À GAUCHE ---
+# LA CONFIGURATION DE L'ICÔNE (Alignée tout à gauche)
 flutter_launcher_icons:
-  image_path: "icon.png"
+  image_path: "icon.png" 
   android: true
   ios: true
   web:
-    generate: true
+    generate: true 
+
+flutter:
+  uses-material-design: true

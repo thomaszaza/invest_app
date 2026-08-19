@@ -12,6 +12,7 @@ void main() async {
 
   await Supabase.initialize(
     url: 'https://pfzsgikdqpnbyhaokdwn.supabase.co',
+    // ignore: deprecated_member_use
     anonKey: 'sb_publishable_owIZox6AqByWrqOiE_bbhQ_opZNPqaG',
   );
 
@@ -267,11 +268,10 @@ class _PositionsScreenState extends State<PositionsScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text("Que voulez-vous ajouter ?", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                const SizedBox(height: 15),
+                
                 ListTile(
-                  leading: const CircleAvatar(backgroundColor: Colors.blueAccent, child: Icon(Icons.swap_horiz, color: Colors.white)),
-                  title: const Text('Une Transaction', style: TextStyle(color: Colors.white)),
+                  leading: const CircleAvatar(backgroundColor: Color.fromARGB(255, 116, 114, 114), child: Icon(Icons.swap_horiz, color: Colors.white)),
+                  title: const Text('Transaction', style: TextStyle(color: Colors.white)),
                   onTap: () async {
                     Navigator.pop(context);
                     final result = await Navigator.push(context, MaterialPageRoute(builder: (context) => const AddTransactionScreen()));
@@ -279,16 +279,16 @@ class _PositionsScreenState extends State<PositionsScreen> {
                   },
                 ),
                 ListTile(
-                  leading: CircleAvatar(backgroundColor: Colors.orange[400], child: const Icon(Icons.business_center, color: Colors.white)),
-                  title: const Text('Un Instrument', style: TextStyle(color: Colors.white)),
+                  leading: CircleAvatar(backgroundColor:Color.fromARGB(255, 116, 114, 114), child: const Icon(Icons.business_center, color: Colors.white)),
+                  title: const Text('Instrument', style: TextStyle(color: Colors.white)),
                   onTap: () {
                     Navigator.pop(context);
                     Navigator.push(context, MaterialPageRoute(builder: (context) => const AddInstrumentScreen()));
                   },
                 ),
                 ListTile(
-                  leading: const CircleAvatar(backgroundColor: Colors.green, child: Icon(Icons.account_balance, color: Colors.white)),
-                  title: const Text('Un Compte', style: TextStyle(color: Colors.white)),
+                  leading: const CircleAvatar(backgroundColor: Color.fromARGB(255, 116, 114, 114), child: Icon(Icons.account_balance, color: Colors.white)),
+                  title: const Text('Compte', style: TextStyle(color: Colors.white)),
                   onTap: () {
                     Navigator.pop(context);
                     Navigator.push(context, MaterialPageRoute(builder: (context) => const AddAccountScreen()));
@@ -337,14 +337,16 @@ class _PositionsScreenState extends State<PositionsScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text("Capital Total Actuel", style: TextStyle(color: Colors.white54, fontSize: 16)),
-                      const SizedBox(height: 5),
-                      Text("${_totalPortfolioValue.toStringAsFixed(2)} €", style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 5),
+                      // 1. La performance globale passe en premier tout en haut
                       Text(
                         "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)", 
-                        style: TextStyle(color: globalColor, fontSize: 16, fontWeight: FontWeight.bold)
+                        style: TextStyle(color: globalColor, fontSize: 18, fontWeight: FontWeight.bold)
                       ),
+                      const SizedBox(height: 5),
+                      // 2. Le capital total actuel passe juste en dessous en plus petit / discret
+                      const Text("Capital Total Actuel", style: TextStyle(color: Colors.white54, fontSize: 13)),
+                      const SizedBox(height: 2),
+                      Text("${_totalPortfolioValue.toStringAsFixed(2)} €", style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
@@ -449,7 +451,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   bool _isLoading = true;
   
   String _selectedPeriod = '1M';
-  // NOUVEAU : Ajout de la période ALL
   final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
   
   List<Map<String, dynamic>> _accountsList = [];
@@ -460,13 +461,15 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   double _periodPerformancePct = 0.0;
   double _currentPortfolioValue = 0.0;
   
-  List<FlSpot> _chartData = [];
+  // NOUVEAU : Deux listes pour stocker les deux graphiques
+  List<FlSpot> _chartDataValue = [];
+  List<FlSpot> _chartDataPercent = [];
+  bool _showPercent = false; // Permet de basculer entre Valeur et Profit
+  
   List<String> _chartDates = []; 
 
   List<Map<String, dynamic>> _allTransactions = [];
   Map<String, Map<String, double>> _yahooHistories = {}; 
-  
-  // NOUVEAU : Stocke les infos de l'Afer pour lisser la courbe entre l'achat et aujourd'hui
   Map<String, Map<String, dynamic>> _aferData = {}; 
 
   @override
@@ -483,7 +486,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       final txData = await supabase.from('transactions').select('*, instruments(id, name, ticker_isin)').order('date', ascending: true);
       _allTransactions = List<Map<String, dynamic>>.from(txData);
 
-      // NOUVEAU : On récupère les derniers prix connus des fonds (sauvegardés par la page Positions)
       final dailyData = await supabase.from('daily_prices').select('*, instruments(name)').order('date', ascending: true);
       Map<String, double> aferLatestPrices = {};
       for (var row in dailyData) {
@@ -498,14 +500,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         if (name.startsWith('EPA:')) {
           _yahooHistories[name] = await _fetchYahooHistory(name);
         } else {
-          // Calcul complexe pour l'AFER
           var aferBuys = _allTransactions.where((tx) => tx['instruments'] != null && tx['instruments']['name'] == name && (tx['transaction_type'] == 'Buy' || tx['transaction_type'] == 'Deposit')).toList();
           
           if (aferBuys.isNotEmpty) {
             aferBuys.sort((a, b) => a['date'].compareTo(b['date']));
             DateTime firstDate = DateTime.parse(aferBuys.first['date'].toString().split('T')[0]);
             
-            // Calcul du PRU moyen réel
             double totalInv = 0.0;
             double totalQty = 0.0;
             for (var b in aferBuys) {
@@ -515,8 +515,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
               totalQty += q;
             }
             double pru = totalQty > 0.001 ? totalInv / totalQty : 0.0;
-            
-            // On prend le vrai prix actuel s'il existe, sinon on garde le PRU
             double latest = aferLatestPrices[name] ?? pru;
 
             _aferData[name] = {
@@ -547,7 +545,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   Future<Map<String, double>> _fetchYahooHistory(String instrumentName) async {
     Map<String, double> history = {};
     String yahooSymbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
-    // NOUVEAU : On demande 5 ans d'historique (5y) au lieu de 1 an
     final targetUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol?range=5y&interval=1d';
     final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
 
@@ -577,7 +574,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     DateTime endDate = DateTime.now();
     DateTime startDate = endDate;
     
-    // NOUVEAU : Logique pour la date "ALL" (Depuis la 1ère transaction)
     List<Map<String, dynamic>> filteredTx = _allTransactions;
     if (_selectedAccountId != 'ALL') {
       filteredTx = _allTransactions.where((tx) => tx['account_id'].toString() == _selectedAccountId).toList();
@@ -591,7 +587,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     else if (_selectedPeriod == 'ALL') {
       if (filteredTx.isNotEmpty) {
         startDate = DateTime.parse(filteredTx.first['date'].toString().split('T')[0]);
-        // Sécurité : ne pas reculer au-delà de 5 ans pour correspondre à l'API Yahoo
         DateTime maxPast = endDate.subtract(const Duration(days: 365 * 5));
         if (startDate.isBefore(maxPast)) startDate = maxPast;
       } else {
@@ -609,7 +604,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
     }
 
-    List<FlSpot> spots = [];
+    List<FlSpot> spotsValue = [];
+    List<FlSpot> spotsPercent = [];
     _chartDates.clear(); 
     
     double firstValue = 0.0;
@@ -619,7 +615,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     for (DateTime d = startDate; d.isBefore(endDate) || d.isAtSameMomentAs(endDate); d = d.add(const Duration(days: 1))) {
       String currentDateStr = d.toIso8601String().split('T')[0];
       
-      Map<String, double> qtys = {};
+      // NOUVEAU : Calcul du capital investi et de la valeur pour chaque jour
+      Map<String, Map<String, double>> instStats = {};
+      
       for (var tx in filteredTx) {
         DateTime txDate = DateTime.parse(tx['date'].toString().split('T')[0]);
         if (txDate.isAfter(d)) continue; 
@@ -628,16 +626,32 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         String instName = tx['instruments']['name'];
         String type = tx['transaction_type'];
         double q = (tx['quantity'] ?? 0).toDouble();
+        double p = (tx['unit_price'] ?? 0).toDouble();
 
-        if (!qtys.containsKey(instName)) qtys[instName] = 0.0;
-        if (type == 'Buy' || type == 'Deposit') qtys[instName] = qtys[instName]! + q;
-        if (type == 'Sell') qtys[instName] = qtys[instName]! - q;
+        if (!instStats.containsKey(instName)) {
+          instStats[instName] = {'qty': 0.0, 'boughtQty': 0.0, 'invested': 0.0};
+        }
+
+        if (type == 'Buy' || type == 'Deposit') {
+          instStats[instName]!['qty'] = instStats[instName]!['qty']! + q;
+          instStats[instName]!['boughtQty'] = instStats[instName]!['boughtQty']! + q;
+          instStats[instName]!['invested'] = instStats[instName]!['invested']! + (q * p);
+        } else if (type == 'Sell') {
+          instStats[instName]!['qty'] = instStats[instName]!['qty']! - q;
+        }
       }
 
       double dailyPortfolioValue = 0.0;
-      qtys.forEach((instName, qty) {
+      double dailyInvestedCapital = 0.0;
+
+      instStats.forEach((instName, stats) {
+        double qty = stats['qty']!;
         if (qty <= 0.001) return;
         
+        // Calcul du PRU exact à ce jour précis
+        double pru = stats['boughtQty']! > 0.001 ? stats['invested']! / stats['boughtQty']! : 0.0;
+        dailyInvestedCapital += (pru * qty);
+
         double price = 0.0;
         if (instName.startsWith('EPA:')) {
           var hist = _yahooHistories[instName];
@@ -651,22 +665,21 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             }
           }
         } else {
-          // NOUVEAU : Interpolation mathématique pour créer la belle ligne ascendante de l'AFER
           var aferInfo = _aferData[instName];
           if (aferInfo != null) {
             DateTime firstDate = aferInfo['firstDate'];
-            double pru = aferInfo['pru'];
+            double globalPru = aferInfo['pru'];
             double latestPrice = aferInfo['latestPrice'];
             
             if (d.isBefore(firstDate)) {
-              price = pru;
+              price = globalPru;
             } else {
               int totalDays = endDate.difference(firstDate).inDays;
               if (totalDays <= 0) {
-                price = pru;
+                price = globalPru;
               } else {
                 int daysSinceFirst = d.difference(firstDate).inDays;
-                price = pru + ((latestPrice - pru) * (daysSinceFirst / totalDays));
+                price = globalPru + ((latestPrice - globalPru) * (daysSinceFirst / totalDays));
               }
             }
           }
@@ -675,7 +688,13 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         dailyPortfolioValue += (qty * price);
       });
 
-      spots.add(FlSpot(dayIndex.toDouble(), dailyPortfolioValue));
+      // Calcul du pourcentage de profit ce jour-là
+      double dailyPct = dailyInvestedCapital > 0.001 
+          ? ((dailyPortfolioValue - dailyInvestedCapital) / dailyInvestedCapital) * 100 
+          : 0.0;
+
+      spotsValue.add(FlSpot(dayIndex.toDouble(), dailyPortfolioValue));
+      spotsPercent.add(FlSpot(dayIndex.toDouble(), dailyPct));
       _chartDates.add(currentDateStr); 
       
       if (dayIndex == 0) firstValue = dailyPortfolioValue;
@@ -686,7 +705,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     setState(() {
       _totalDividends = divs;
       _currentPortfolioValue = lastValue.isNaN ? 0.0 : lastValue;
-      _chartData = spots;
+      _chartDataValue = spotsValue;
+      _chartDataPercent = spotsPercent;
       _periodPerformanceAbs = lastValue - firstValue;
       _periodPerformancePct = firstValue > 0.001 ? (_periodPerformanceAbs / firstValue) * 100 : 0.0;
     });
@@ -694,6 +714,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // On sélectionne la liste de points à afficher en fonction du bouton choisi
+    List<FlSpot> activeChartData = _showPercent ? _chartDataPercent : _chartDataValue;
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -703,7 +726,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
           : Column(
               children: [
-                // 1. Sélecteur de compte
                 Container(
                   color: Colors.black, 
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -727,7 +749,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                   ),
                 ),
 
-                // 2. En-tête des Performances
                 Container(
                   width: double.infinity, 
                   color: const Color(0xFF1C1C1E), 
@@ -753,6 +774,41 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         ],
                       ),
                       const SizedBox(height: 16),
+                      
+                      // Les boutons pour basculer entre Valeur et Profit
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          GestureDetector(
+                            onTap: () => setState(() => _showPercent = false),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: !_showPercent ? Colors.blueAccent : Colors.transparent,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: Colors.blueAccent),
+                              ),
+                              child: Text("Valeur (€)", style: TextStyle(color: !_showPercent ? Colors.white : Colors.blueAccent, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          GestureDetector(
+                            onTap: () => setState(() => _showPercent = true),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: _showPercent ? Colors.blueAccent : Colors.transparent,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: Colors.blueAccent),
+                              ),
+                              child: Text("Profit (%)", style: TextStyle(color: _showPercent ? Colors.white : Colors.blueAccent, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                        ],
+                      ),
+                      
+                      // LE RETOUR DE L'AFFICHAGE DES DIVIDENDES ICI :
+                      const SizedBox(height: 16),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                         decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
@@ -760,17 +816,16 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                           "Dividendes encaissés : ${_totalDividends.toStringAsFixed(2)} €",
                           style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold),
                         ),
-                      )
+                      ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 20),
 
-                // 3. Graphique
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.only(right: 20, left: 10, bottom: 20),
-                    child: _chartData.isEmpty 
+                    child: activeChartData.isEmpty 
                     ? const Center(child: Text("Pas de données sur cette période", style: TextStyle(color: Colors.white54)))
                     : LineChart(
                       LineChartData(
@@ -787,7 +842,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                             sideTitles: SideTitles(
                               showTitles: true,
                               reservedSize: 30,
-                              interval: (_chartData.length / 5).ceilToDouble() == 0 ? 1 : (_chartData.length / 5).ceilToDouble(),
+                              interval: (activeChartData.length / 5).ceilToDouble() == 0 ? 1 : (activeChartData.length / 5).ceilToDouble(),
                               getTitlesWidget: (value, meta) {
                                 int index = value.toInt();
                                 if (index >= 0 && index < _chartDates.length) {
@@ -795,11 +850,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                   String day = d.day.toString().padLeft(2, '0');
                                   String month = d.month.toString().padLeft(2, '0');
                                   
-                                  // Si on est sur de très longues périodes (ALL/1A), on affiche l'année plutôt que le jour
                                   if (_selectedPeriod == 'ALL' || _selectedPeriod == '1A') {
                                     return Padding(
                                       padding: const EdgeInsets.only(top: 8.0),
-                                      child: Text('${month}/${d.year.toString().substring(2)}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                                      child: Text('$month/${d.year.toString().substring(2)}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
                                     );
                                   }
                                   
@@ -817,7 +871,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               showTitles: true,
                               reservedSize: 50, 
                               getTitlesWidget: (value, meta) {
-                                return Text('${value.toInt()} €', style: const TextStyle(color: Colors.white54, fontSize: 11));
+                                // NOUVEAU : Changement de l'axe Y selon le mode choisi
+                                if (_showPercent) {
+                                  return Text('${value.toInt()}%', style: const TextStyle(color: Colors.white54, fontSize: 11));
+                                } else {
+                                  return Text('${value.toInt()} €', style: const TextStyle(color: Colors.white54, fontSize: 11));
+                                }
                               },
                             ),
                           ),
@@ -829,8 +888,13 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               return touchedSpots.map((spot) {
                                 int index = spot.x.toInt();
                                 String date = index < _chartDates.length ? _chartDates[index] : "";
+                                // NOUVEAU : Changement de l'infobulle selon le mode choisi
+                                String valStr = _showPercent
+                                    ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
+                                    : "${spot.y.toStringAsFixed(2)} €";
+                                    
                                 return LineTooltipItem(
-                                  "$date\n${spot.y.toStringAsFixed(2)} €",
+                                  "$date\n$valStr",
                                   const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                                 );
                               }).toList();
@@ -839,7 +903,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         ),
                         lineBarsData: [
                           LineChartBarData(
-                            spots: _chartData,
+                            spots: activeChartData,
                             isCurved: true,
                             color: _periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent,
                             barWidth: 2, 
@@ -856,7 +920,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                   ),
                 ),
 
-                // 4. Sélecteur de Période (AVEC LE BOUTON 'ALL')
                 Container(
                   color: Colors.black, 
                   padding: const EdgeInsets.symmetric(vertical: 16),
@@ -905,12 +968,11 @@ class PortfolioScreen extends StatefulWidget {
 
 class _PortfolioScreenState extends State<PortfolioScreen> {
   final supabase = Supabase.instance.client;
-  
   bool _isLoading = true;
   List<Map<String, dynamic>> _instruments = [];
   List<Map<String, dynamic>> _history = [];
   Map<String, double> _livePrices = {}; 
-  Map<String, double> _ownedQuantities = {}; // Quantités possédées
+  Map<String, double> _ownedQuantities = {};
 
   @override
   void initState() {
@@ -918,17 +980,154 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     _loadPortfolioData();
   }
 
-   // 1. Fonction pour interroger l'API ou le Web Scraping
-  Future<double?> _fetchLivePrice(String instrumentName, String isin, dynamic instrumentId) async {
+  // Boîte de dialogue pour modifier une transaction existante
+  Future<void> _showEditTransactionDialog(Map<String, dynamic> tx) async {
+    final TextEditingController qtyController = TextEditingController(text: tx['quantity'].toString());
+    final TextEditingController priceController = TextEditingController(text: tx['unit_price'].toString());
     
-    // ==========================================
-    // CAS 1 : ACTIONS (YAHOO FINANCE)
-    // ==========================================
+    DateTime selectedDate = DateTime.parse(tx['date'].toString().split('T')[0]);
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: Text("Modifier la transaction", style: const TextStyle(color: Colors.white)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("Instrument : ${tx['instruments']?['name'] ?? 'Inconnu'}", style: const TextStyle(color: Colors.white54, fontSize: 13)),
+                const SizedBox(height: 15),
+                // Modification de la date
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text("Date : ${selectedDate.toLocal().toString().split(' ')[0]}", style: const TextStyle(color: Colors.white)),
+                  trailing: const Icon(Icons.calendar_today, color: Colors.blueAccent),
+                  onTap: () async {
+                    final DateTime? picked = await showDatePicker(
+                      context: context,
+                      initialDate: selectedDate,
+                      firstDate: DateTime(2000),
+                      lastDate: DateTime.now(),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        selectedDate = picked;
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 10),
+                // Modification de la quantité
+                TextField(
+                  controller: qtyController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: "Quantité",
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.blueAccent)),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                // Modification du prix unitaire
+                TextField(
+                  controller: priceController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: "Prix unitaire (€)",
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.blueAccent)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
+            TextButton(
+              onPressed: () async {
+                double? newQty = double.tryParse(qtyController.text.replaceAll(',', '.'));
+                double? newPrice = double.tryParse(priceController.text.replaceAll(',', '.'));
+                
+                if (newQty != null && newPrice != null) {
+                  await supabase.from('transactions').update({
+                    'quantity': newQty,
+                    'unit_price': newPrice,
+                    'date': selectedDate.toIso8601String(),
+                  }).eq('id', tx['id']);
+
+                  Navigator.pop(context);
+                  _loadPortfolioData(); // Recharge tout pour actualiser les graphiques et totaux
+                }
+              },
+              child: const Text("Mettre à jour", style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
+    final TextEditingController priceController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: Text("Prix manuel : ${inst['name']}", style: const TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: priceController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: "Entrez le prix unitaire",
+            hintStyle: TextStyle(color: Colors.white54),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.blueAccent)),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
+          TextButton(
+            onPressed: () async {
+              double? newPrice = double.tryParse(priceController.text.replaceAll(',', '.'));
+              if (newPrice != null) {
+                final today = DateTime.now().toIso8601String().split('T')[0];
+                await supabase.from('daily_prices').upsert({
+                  'instrument_id': inst['id'],
+                  'date': today,
+                  'price': newPrice,
+                });
+                Navigator.pop(context);
+                _loadPortfolioData();
+              }
+            },
+            child: const Text("Enregistrer", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<double?> _fetchLivePrice(String instrumentName, String isin, dynamic instrumentId) async {
+    final today = DateTime.now().toIso8601String().split('T')[0];
+    final manualPrice = await supabase
+        .from('daily_prices')
+        .select('price')
+        .eq('instrument_id', instrumentId)
+        .eq('date', today)
+        .maybeSingle();
+
+    if (manualPrice != null) return (manualPrice['price'] as num).toDouble();
+
     if (instrumentName.startsWith('EPA:')) {
       String yahooSymbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
       final targetUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol';
       final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-      
       try {
         final response = await http.get(proxyUrl);
         if (response.statusCode == 200) {
@@ -936,134 +1135,47 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           final price = data['chart']['result'][0]['meta']['regularMarketPrice'];
           return (price as num).toDouble();
         }
-      } catch (e) {
-        print("Erreur Yahoo pour $yahooSymbol : $e");
-      }
-      return null;
-    } 
-    
-    // ==========================================
-    // CAS 2 : FONDS AFER (FINANCIAL TIMES + SAUVEGARDE SUPABASE)
-    // ==========================================
-    else if (isin.isNotEmpty) {
+      } catch (e) {}
+    } else if (isin.isNotEmpty) {
       final targetUrl = 'https://markets.ft.com/data/funds/tearsheet/summary?s=$isin:EUR';
       final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-
       try {
         final response = await http.get(proxyUrl);
         if (response.statusCode == 200) {
           var document = parser.parse(response.body);
           var elements = document.querySelectorAll('.mod-ui-data-list__value');
-          
           if (elements.isNotEmpty) {
-            String rawValue = elements[0].text;
-            String cleanValue = rawValue.replaceAll(',', '').replaceAll(' ', '');
-            double? price = double.tryParse(cleanValue);
-
-            // NOUVEAU : Sauvegarde du prix dans Supabase pour l'historique !
-            if (price != null) {
-              final today = DateTime.now().toIso8601String().split('T')[0]; // Format AAAA-MM-JJ
-              try {
-                await supabase.from('daily_prices').upsert({
-                  'instrument_id': instrumentId,
-                  'date': today,
-                  'price': price,
-                });
-              } catch (e) {
-                print("Erreur de sauvegarde Supabase pour $instrumentName : $e");
-              }
-            }
-            return price;
+            String cleanValue = elements[0].text.replaceAll(',', '').replaceAll(' ', '');
+            return double.tryParse(cleanValue);
           }
         }
-      } catch (e) {
-        print("Erreur Financial Times pour $isin : $e");
-      }
+      } catch (e) {}
     }
     return null;
   }
 
-
-  // Fonction pour récupérer l'historique d'une action sur Yahoo Finance (1 an)
-  Future<Map<String, double>> _fetchYahooHistory(String instrumentName) async {
-    Map<String, double> history = {};
-    
-    if (!instrumentName.startsWith('EPA:')) return history; // Uniquement pour les actions
-    
-    String yahooSymbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
-    // On demande 1 an (1y) avec 1 point par jour (1d)
-    final targetUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol?range=1y&interval=1d';
-    final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-
-    try {
-      final response = await http.get(proxyUrl);
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final result = data['chart']['result'][0];
-        
-        List<dynamic> timestamps = result['timestamp'];
-        List<dynamic> closePrices = result['indicators']['quote'][0]['close'];
-
-        for (int i = 0; i < timestamps.length; i++) {
-          if (closePrices[i] != null) {
-            // Convertir le timestamp UNIX en date lisible AAAA-MM-JJ
-            DateTime date = DateTime.fromMillisecondsSinceEpoch(timestamps[i] * 1000);
-            String dateString = date.toIso8601String().split('T')[0];
-            history[dateString] = (closePrices[i] as num).toDouble();
-          }
-        }
-      }
-    } catch (e) {
-      print("Erreur historique Yahoo pour $yahooSymbol : $e");
-    }
-    return history;
-  }
-
-  // 2. Chargement des données Supabase et API
   Future<void> _loadPortfolioData() async {
     setState(() => _isLoading = true);
-
     try {
-      final historyData = await supabase
-          .from('transactions')
-          .select('*, instruments(name, ticker_isin), accounts(name)')
-          .order('created_at', ascending: false);
+      final historyData = await supabase.from('transactions').select('*, instruments(name, ticker_isin), accounts(name)').order('date', ascending: false);
+      final instrumentsData = await supabase.from('instruments').select('id, name, ticker_isin').order('name');
 
-      final instrumentsData = await supabase
-          .from('instruments')
-          .select('id, name, ticker_isin')
-          .order('name');
-
-      // Calcul des quantités
       Map<String, double> qtys = {};
       for (var tx in historyData) {
         if (tx['instruments'] == null) continue;
-        String instName = tx['instruments']['name']; // On utilise le nom comme clé
+        String instName = tx['instruments']['name'];
         double qty = (tx['quantity'] ?? 0).toDouble();
         String type = tx['transaction_type'];
-
         if (!qtys.containsKey(instName)) qtys[instName] = 0.0;
-
-        if (type == 'Buy') {
-          qtys[instName] = qtys[instName]! + qty;
-        } else if (type == 'Sell') {
-          qtys[instName] = qtys[instName]! - qty;
-        }
+        if (type == 'Buy' || type == 'Deposit') qtys[instName] = qtys[instName]! + qty;
+        else if (type == 'Sell') qtys[instName] = qtys[instName]! - qty;
       }
       _ownedQuantities = qtys;
 
-     // Interrogation API avec le NOM, le TICKER/ISIN et l'ID
       Map<String, double> prices = {};
       for (var inst in instrumentsData) {
-        String instName = inst['name'];
-        String instIsin = inst['ticker_isin']; // <-- C'est cette ligne qui manquait !
-        
-        // On envoie les 3 infos à la fonction
-        double? livePrice = await _fetchLivePrice(instName, instIsin, inst['id']); 
-        
-        if (livePrice != null) {
-          prices[instName] = livePrice;
-        }
+        double? livePrice = await _fetchLivePrice(inst['name'], inst['ticker_isin'], inst['id']); 
+        if (livePrice != null) prices[inst['name']] = livePrice;
       }
 
       if (mounted) {
@@ -1075,7 +1187,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         });
       }
     } catch (e) {
-      print("Erreur Portfolio: $e");
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -1085,118 +1196,61 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     return DefaultTabController(
       length: 2,
       child: Scaffold(
-        backgroundColor: Colors.black, // <-- CORRECTION 1 : Fond noir au lieu de grey[100]
+        backgroundColor: Colors.black,
         appBar: AppBar(
-          title: const Text('Portfolio', style: TextStyle(fontWeight: FontWeight.bold)),
-          backgroundColor: Colors.black, // <-- CORRECTION 2 : Bandeau noir au lieu de blueAccent
-          foregroundColor: Colors.white,
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: _loadPortfolioData,
-            )
-          ],
+          title: const Text('Portfolio'),
+          backgroundColor: Colors.black,
           bottom: const TabBar(
-            labelColor: Colors.blueAccent, // Le texte de l'onglet actif en bleu pour qu'on le voie bien
+            labelColor: Colors.blueAccent,
             unselectedLabelColor: Colors.white54,
             indicatorColor: Colors.blueAccent,
-            tabs: [
-              Tab(icon: Icon(Icons.show_chart), text: 'Valeurs (Live)'),
-              Tab(icon: Icon(Icons.history), text: 'Historique'),
-            ],
+            tabs: [Tab(text: 'Valeurs (Live)'), Tab(text: 'Historique')],
           ),
         ),
-        body: _isLoading
+        body: _isLoading ? const Center(child: CircularProgressIndicator()) : TabBarView(
+          children: [
+            // --- ONGLET 1 : VALEURS ---
+            ListView.builder(
+              itemCount: _instruments.length,
+            itemBuilder: (context, index) {
+                final inst = _instruments[index];
+                final ownedQty = _ownedQuantities[inst['name']] ?? 0.0;
+                if (ownedQty <= 0) return const SizedBox.shrink();
+                
+                final currentPrice = _livePrices[inst['name']];
 
-            ? const Center(child: CircularProgressIndicator(color: Colors.white))
-            : TabBarView(
-                children: [
-                  // --- ONGLET 1 : LES VALEURS EN DIRECT ---
-                  ListView.builder(
-                    padding: const EdgeInsets.all(8),
-                    itemCount: _instruments.length,
-                    itemBuilder: (context, index) {
-                      final inst = _instruments[index];
-                      final instName = inst['name'];
-                      final currentPrice = _livePrices[instName];
-                      final ownedQty = _ownedQuantities[instName] ?? 0.0;
-                      
-                      // Masquer les actions à 0
-                      if (ownedQty <= 0) return const SizedBox.shrink();
-
-                      return Card(
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        child: ListTile(
-                          title: Text(instName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                          subtitle: Text("Qté: ${ownedQty.toStringAsFixed(2)}"),
-                          trailing: currentPrice != null
-                              ? Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    Text(
-                                      "${(currentPrice * ownedQty).toStringAsFixed(2)} €",
-                                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
-                                    ),
-                                    Text(
-                                      "Unité : ${currentPrice.toStringAsFixed(2)} €",
-                                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                                    ),
-                                  ],
-                                )
-                              : Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    const Text("Non coté", style: TextStyle(fontWeight: FontWeight.bold)),
-                                    Text("Unité : -- €", style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-                                  ],
-                                ),
-                        ),
-                      );
-                    },
+                return Card(
+                  color: const Color(0xFF1C1C1E),
+                  child: ListTile(
+                    onTap: () => _showManualPriceDialog(inst),
+                    title: Text(inst['name'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    trailing: Text(
+                      currentPrice != null ? "${currentPrice.toStringAsFixed(2)} €" : "Non coté", 
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
                   ),
-
-                  // --- ONGLET 2 : L'HISTORIQUE ---
-                  ListView.builder(
-                    padding: const EdgeInsets.all(8),
-                    itemCount: _history.length,
-                    itemBuilder: (context, index) {
-                      final tx = _history[index];
-                      final instName = tx['instruments'] != null ? tx['instruments']['name'] : 'Inconnu';
-                      final accName = tx['accounts'] != null ? tx['accounts']['name'] : '';
-                      final type = tx['transaction_type'];
-                      final qty = tx['quantity'];
-                      final price = tx['unit_price'];
-
-                      Color typeColor = Colors.grey;
-                      IconData typeIcon = Icons.compare_arrows;
-                      if (type == 'Buy') { typeColor = Colors.green; typeIcon = Icons.add_circle; }
-                      else if (type == 'Sell') { typeColor = Colors.red; typeIcon = Icons.remove_circle; }
-                      else if (type == 'Dividend') { typeColor = Colors.white; typeIcon = Icons.monetization_on; }
-
-                      return Card(
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        child: ListTile(
-                          leading: Icon(typeIcon, color: typeColor, size: 30),
-                          title: Text(instName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                          // Affichage sécurisé de created_at si date non disponible
-                          subtitle: Text("Compte: $accName\nSaisie: ${tx['created_at'] != null ? tx['created_at'].toString().split('T')[0] : 'Inconnue'}"),
-                          trailing: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(type, style: TextStyle(color: typeColor, fontWeight: FontWeight.bold)),
-                              Text("${qty.toStringAsFixed(2)} à ${price.toStringAsFixed(2)} €", style: const TextStyle(fontSize: 14)),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
+                );
+              },
+            ),
+            // --- ONGLET 2 : HISTORIQUE (AVEC CLIC DE MODIFICATION) ---
+            ListView.builder(
+              padding: const EdgeInsets.all(8),
+              itemCount: _history.length,
+              itemBuilder: (context, index) {
+                final tx = _history[index];
+                return Card(
+                  color: const Color(0xFF1C1C1E),
+                  child: ListTile(
+                    onTap: () => _showEditTransactionDialog(tx), // <-- Déclencheur de modification au clic !
+                    title: Text(tx['instruments']?['name'] ?? 'Inconnu', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: Text("${tx['transaction_type']} • ${tx['date'].toString().split('T')[0]}", style: const TextStyle(color: Colors.white54)),
+                    trailing: Text("${tx['quantity']} x ${tx['unit_price']} €", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
-                ],
-              ),
+                );
+              },
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1313,6 +1367,7 @@ final _quantityController = TextEditingController();
 
     try {
       // 1. C'est ICI qu'on prépare toutes nos variables (les "final" et les vérifications)
+      // 1. C'est ICI qu'on prépare toutes nos variables (les "final" et les vérifications)
       final quantity = double.parse(_quantityController.text.replaceAll(',', '.'));
       final unitPrice = double.parse(_priceController.text.replaceAll(',', '.'));
       
@@ -1325,9 +1380,10 @@ final _quantityController = TextEditingController();
       await supabase.from('transactions').insert({
         'transaction_type': _selectedType,
         'instrument_id': _selectedInstrumentId,
-        'account_id': _selectedAccountId, // <-- Envoi du compte sélectionné
-        'quantity': double.parse(_quantityController.text.replaceAll(',', '.')),
-        'unit_price': double.parse(_priceController.text.replaceAll(',', '.')),
+        'account_id': _selectedAccountId, 
+        'quantity': quantity,           // <-- On utilise enfin la variable !
+        'unit_price': unitPrice,        // <-- On utilise enfin la variable !
+        'fees': fees,                   // <-- On envoie les frais !
         'date': _selectedDate.toIso8601String(),
       });
 
@@ -1422,7 +1478,7 @@ final _quantityController = TextEditingController();
                       items: _instrumentsList.map((inst) {
                         return DropdownMenuItem(
                           value: inst['id'],
-                          child: Text("${inst['name']} (${inst['ticker_isin']})"),
+                          child: Text("${inst['name']}"),
                         );
                       }).toList(),
                       onChanged: (value) => setState(() => _selectedInstrumentId = value),
@@ -1470,7 +1526,7 @@ final _quantityController = TextEditingController();
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.white,
-                        foregroundColor: Colors.white,
+                        foregroundColor: Colors.blueAccent,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
@@ -1550,7 +1606,7 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
               const SizedBox(height: 24),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white, foregroundColor: Colors.white,
+                  backgroundColor: Colors.white, foregroundColor: Colors.blueAccent,
                   minimumSize: const Size(double.infinity, 50),
                 ),
                 onPressed: _isSubmitting ? null : _submitAccount,
@@ -1609,7 +1665,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Nouvel Instrument'), backgroundColor: Colors.white, foregroundColor: Colors.white),
+      appBar: AppBar(title: const Text('Nouvel Instrument'), backgroundColor: Colors.white, foregroundColor: Colors.blueAccent),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Form(
@@ -1630,7 +1686,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
               const SizedBox(height: 24),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white, foregroundColor: Colors.white,
+                  backgroundColor: Colors.white, foregroundColor: Colors.blueAccent,
                   minimumSize: const Size(double.infinity, 50),
                 ),
                 onPressed: _isSubmitting ? null : _submitInstrument,
