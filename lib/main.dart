@@ -3,9 +3,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:html/parser.dart' as parser;
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
-
+const List<String> kCategories = ['Croissance', 'Dividende', 'Opportunité'];
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,7 +16,384 @@ void main() async {
     anonKey: 'sb_publishable_owIZox6AqByWrqOiE_bbhQ_opZNPqaG',
   );
 
+  await NotificationService.init();
+
   runApp(const InvestApp());
+}
+
+// ==========================================
+// SERVICES PARTAGÉS
+// ==========================================
+
+class NotificationService {
+  static final FlutterLocalNotificationsPlugin _plugin =
+      FlutterLocalNotificationsPlugin();
+
+  static Future<void> init() async {
+    const androidSettings = AndroidInitializationSettings(
+      '@mipmap/ic_launcher',
+    );
+    const iosSettings = DarwinInitializationSettings();
+    const settings = InitializationSettings(
+      android: androidSettings,
+      iOS: iosSettings,
+    );
+    try {
+      await _plugin.initialize(settings);
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.requestNotificationsPermission();
+    } catch (e) {
+      print("Erreur init notifications: $e");
+    }
+  }
+
+  static Future<void> showAlert(int id, String title, String body) async {
+    const androidDetails = AndroidNotificationDetails(
+      'price_alerts',
+      'Alertes de prix',
+      channelDescription: 'Notifications quand un seuil de prix est atteint',
+      importance: Importance.high,
+      priority: Priority.high,
+    );
+    const details = NotificationDetails(
+      android: androidDetails,
+      iOS: DarwinNotificationDetails(),
+    );
+    try {
+      await _plugin.show(id, title, body, details);
+    } catch (e) {
+      print("Erreur notification: $e");
+    }
+  }
+}
+
+// Cache en mémoire pour éviter les requêtes réseau répétitives
+class PriceCache {
+  static final Map<String, double> _prices = {};
+  static final Map<String, DateTime> _timestamps = {};
+  static final Map<String, Map<String, double>> _histories = {};
+  static final Map<String, DateTime> _historyTimestamps = {};
+
+  static void set(String instrumentId, double price) {
+    _prices[instrumentId] = price;
+    _timestamps[instrumentId] = DateTime.now();
+  }
+
+  static double? get(String instrumentId) {
+    if (_timestamps.containsKey(instrumentId) &&
+        DateTime.now().difference(_timestamps[instrumentId]!).inMinutes < 15) {
+      return _prices[instrumentId];
+    }
+    return null;
+  }
+
+  static void setHistory(String cacheKey, Map<String, double> history) {
+    _histories[cacheKey] = history;
+    _historyTimestamps[cacheKey] = DateTime.now();
+  }
+
+  static Map<String, double>? getHistory(String cacheKey) {
+    if (_historyTimestamps.containsKey(cacheKey) &&
+        DateTime.now().difference(_historyTimestamps[cacheKey]!).inHours < 6) {
+      return _histories[cacheKey];
+    }
+    return null;
+  }
+}
+
+class PriceService {
+  static final supabase = Supabase.instance.client;
+
+  static Future<double?> fetchLivePrice(
+      String instrumentName, String isin, dynamic instrumentId) async {
+    // 1. Vérifier le cache (si présent, retour immédiat)
+    double? cached = PriceCache.get(instrumentId.toString());
+    if (cached != null) return cached;
+
+    // 2. Vérifier prix manuel dans Supabase
+    try {
+      final today = DateTime.now().toIso8601String().split('T')[0];
+      final manual = await supabase
+          .from('daily_prices')
+          .select('price')
+          .eq('instrument_id', instrumentId)
+          .eq('date', today)
+          .maybeSingle();
+      if (manual != null) {
+        final p = (manual['price'] as num).toDouble();
+        if (!p.isNaN) {
+          PriceCache.set(instrumentId.toString(), p);
+          return p;
+        }
+      }
+    } catch (e) {
+      print("Erreur prix manuel : $e");
+    }
+
+    double? finalPrice;
+
+    // 3. Logique Yahoo Finance / ISIN
+    try {
+      String symbol = "";
+      if (instrumentName.startsWith('EPA:')) {
+        symbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
+      } else if (isin.isNotEmpty && isin != 'CASH') {
+        final targetSearchUrl =
+            'https://query2.finance.yahoo.com/v1/finance/search?q=$isin';
+        final searchUrl = Uri.parse(
+            'https://corsproxy.io/?${Uri.encodeComponent(targetSearchUrl)}');
+        final searchResponse = await http.get(searchUrl);
+        if (searchResponse.statusCode == 200) {
+          final data = json.decode(searchResponse.body);
+          if (data['quotes'] != null && data['quotes'].isNotEmpty) {
+            symbol = data['quotes'][0]['symbol'];
+          }
+        }
+      }
+
+      if (symbol.isNotEmpty) {
+        final targetChartUrl =
+            'https://query1.finance.yahoo.com/v8/finance/chart/$symbol';
+        final chartUrl = Uri.parse(
+            'https://corsproxy.io/?${Uri.encodeComponent(targetChartUrl)}');
+        final response = await http.get(chartUrl);
+        if (response.statusCode == 200) {
+          final data = json.decode(response.body);
+          final price =
+              data['chart']['result'][0]['meta']['regularMarketPrice'];
+          finalPrice = (price as num).toDouble();
+        }
+      }
+    } catch (e) {
+      print("Erreur fetchLivePrice : $e");
+    }
+
+    // 4. Stocker dans le cache et retourner
+    if (finalPrice != null && !finalPrice.isNaN) {
+      PriceCache.set(instrumentId.toString(), finalPrice);
+      return finalPrice;
+    }
+
+    return null;
+  }
+
+  static Future<Map<String, double>> fetchYahooHistory(String instrumentName,
+      {String? isin, String range = 'max'}) async {
+    final cacheKey = '${instrumentName}|${isin ?? ''}|$range';
+
+    final cachedHistory = PriceCache.getHistory(cacheKey);
+    if (cachedHistory != null && cachedHistory.isNotEmpty) {
+      return cachedHistory;
+    }
+
+    Map<String, double> history = {};
+    String? symbol;
+
+    if (instrumentName.startsWith('EPA:')) {
+      symbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
+    } else if (isin != null && isin.isNotEmpty && isin != 'CASH') {
+      try {
+        final searchUrl = Uri.parse(
+            'https://corsproxy.io/?${Uri.encodeComponent('https://query2.finance.yahoo.com/v1/finance/search?q=$isin')}');
+        final res = await http.get(searchUrl);
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          if (data['quotes'] != null && data['quotes'].isNotEmpty) {
+            symbol = data['quotes'][0]['symbol'];
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (symbol == null) return history;
+
+    final targetUrl =
+        'https://query1.finance.yahoo.com/v8/finance/chart/$symbol?range=$range&interval=1d';
+    final proxyUrl =
+        Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
+
+    try {
+      final response = await http.get(proxyUrl);
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final result = data['chart']['result'][0];
+        List<dynamic> timestamps = result['timestamp'];
+        List<dynamic> closePrices = result['indicators']['quote'][0]['close'];
+
+        for (int i = 0; i < timestamps.length; i++) {
+          if (closePrices[i] != null) {
+            DateTime date =
+                DateTime.fromMillisecondsSinceEpoch(timestamps[i] * 1000);
+            history[date.toIso8601String().split('T')[0]] =
+                (closePrices[i] as num).toDouble();
+          }
+        }
+      }
+    } catch (e) {
+      print("Erreur historique: $e");
+    }
+
+    if (history.isNotEmpty) {
+      PriceCache.setHistory(cacheKey, history);
+    }
+
+    return history;
+  }
+}
+
+class AlertsService {
+  static final supabase = Supabase.instance.client;
+
+  static Future<void> checkAlerts(
+    Map<String, dynamic> instrument,
+    double? currentPrice,
+  ) async {
+    if (currentPrice == null || instrument['id'] == null) return;
+    try {
+      final alerts = await supabase
+          .from('alerts')
+          .select()
+          .eq('instrument_id', instrument['id'])
+          .eq('active', true)
+          .eq('triggered', false);
+
+      for (var alert in alerts) {
+        double threshold = (alert['threshold_price'] as num).toDouble();
+        String direction = alert['direction'];
+        bool hit = (direction == 'above' && currentPrice >= threshold) ||
+            (direction == 'below' && currentPrice <= threshold);
+        if (hit) {
+          await NotificationService.showAlert(
+            (alert['id'] as num).toInt(),
+            "Alerte : ${instrument['name']}",
+            "Le prix a atteint ${currentPrice.toStringAsFixed(2)} € (seuil : ${threshold.toStringAsFixed(2)} €)",
+          );
+          await supabase
+              .from('alerts')
+              .update({'triggered': true}).eq('id', alert['id']);
+        }
+      }
+    } catch (e) {
+      print("Erreur vérification alertes: $e");
+    }
+  }
+
+  static Future<void> createAlert(
+    dynamic instrumentId,
+    double threshold,
+    String direction,
+  ) async {
+    await supabase.from('alerts').insert({
+      'instrument_id': instrumentId,
+      'threshold_price': threshold,
+      'direction': direction,
+      'active': true,
+      'triggered': false,
+    });
+  }
+}
+
+void showCreateAlertDialog(
+  BuildContext context,
+  Map<String, dynamic> instrument,
+) {
+  final TextEditingController thresholdController = TextEditingController();
+  String direction = 'above';
+  showDialog(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: Text(
+          "Alerte : ${instrument['name']}",
+          style: const TextStyle(color: Colors.white),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: thresholdController,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: "Seuil de prix (€)",
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.blueAccent),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: RadioListTile<String>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      "Au-dessus",
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                    value: 'above',
+                    groupValue: direction,
+                    onChanged: (v) => setDialogState(() => direction = v!),
+                  ),
+                ),
+                Expanded(
+                  child: RadioListTile<String>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text(
+                      "En dessous",
+                      style: TextStyle(color: Colors.white, fontSize: 13),
+                    ),
+                    value: 'below',
+                    groupValue: direction,
+                    onChanged: (v) => setDialogState(() => direction = v!),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Annuler"),
+          ),
+          TextButton(
+            onPressed: () async {
+              double? threshold = double.tryParse(
+                thresholdController.text.replaceAll(',', '.'),
+              );
+              if (threshold != null && instrument['id'] != null) {
+                await AlertsService.createAlert(
+                  instrument['id'],
+                  threshold,
+                  direction,
+                );
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Alerte créée !"),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              }
+            },
+            child: const Text(
+              "Créer l'alerte",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class InvestApp extends StatelessWidget {
@@ -24,7 +401,7 @@ class InvestApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-   return MaterialApp(
+    return MaterialApp(
       title: 'ZaZa Invest',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -39,8 +416,7 @@ class InvestApp extends StatelessWidget {
         ),
         fontFamily: 'Helvetica Neue',
       ),
-      // On met ton vrai écran d'accueil ici, sans le "const" pour éviter l'erreur !
-      home: MainNavigationScreen(), 
+      home: const MainNavigationScreen(),
     );
   }
 }
@@ -60,6 +436,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 
   final List<Widget> _screens = [
     const PositionsScreen(),
+    const WatchlistScreen(),
     const PerformanceScreen(),
     const PortfolioScreen(),
   ];
@@ -67,19 +444,24 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _screens[_currentIndex], 
+      body: _screens[_currentIndex],
       bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
         currentIndex: _currentIndex,
         onTap: (index) {
           setState(() {
             _currentIndex = index;
           });
         },
-        selectedItemColor: Colors.blueAccent,
+        selectedItemColor: Colors.white,
         items: const [
           BottomNavigationBarItem(
             icon: Icon(Icons.list_alt),
             label: 'Positions',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.visibility),
+            label: 'Watchlist',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.show_chart),
@@ -109,63 +491,14 @@ class _PositionsScreenState extends State<PositionsScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
   List<Map<String, dynamic>> _positions = [];
-  
+
   double _totalPortfolioValue = 0.0;
-  double _totalInvestedValue = 0.0; 
+  double _totalInvestedValue = 0.0;
 
   @override
   void initState() {
     super.initState();
     _loadPositions();
-  }
-
-  Future<double?> _fetchLivePrice(String instrumentName, String isin, dynamic instrumentId) async {
-    if (instrumentName.startsWith('EPA:')) {
-      String yahooSymbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
-      final targetUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol';
-      final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-      try {
-        final response = await http.get(proxyUrl);
-        if (response.statusCode == 200) {
-          final data = json.decode(response.body);
-          final price = data['chart']['result'][0]['meta']['regularMarketPrice'];
-          double? finalPrice = (price as num).toDouble();
-          if (finalPrice.isNaN) return null; // Sécurité anti-NaN
-          return finalPrice;
-        }
-      } catch (e) {
-        print("Erreur Yahoo pour $yahooSymbol : $e");
-      }
-      return null;
-    } else if (isin.isNotEmpty) {
-      final targetUrl = 'https://markets.ft.com/data/funds/tearsheet/summary?s=$isin:EUR';
-      final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-      try {
-        final response = await http.get(proxyUrl);
-        if (response.statusCode == 200) {
-          var document = parser.parse(response.body);
-          var elements = document.querySelectorAll('.mod-ui-data-list__value');
-          if (elements.isNotEmpty) {
-            String cleanValue = elements[0].text.replaceAll(',', '').replaceAll(' ', '');
-            double? price = double.tryParse(cleanValue);
-            
-            // Sécurité anti-NaN
-            if (price != null && price.isNaN) {
-              price = null;
-            }
-
-            if (price != null) {
-              final today = DateTime.now().toIso8601String().split('T')[0];
-              try {
-                await supabase.from('daily_prices').upsert({'instrument_id': instrumentId, 'date': today, 'price': price});
-              } catch (e) {}
-            }
-            return price;
-          }
-        }
-      } catch (e) {}
-    }
-    return null;
   }
 
   Future<void> _loadPositions() async {
@@ -174,7 +507,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
     try {
       final txData = await supabase
           .from('transactions')
-          .select('*, instruments(id, name, ticker_isin)')
+          .select('*, instruments(id, name, ticker_isin, category, comment)')
           .order('date', ascending: true);
 
       Map<String, Map<String, dynamic>> tempPositions = {};
@@ -182,7 +515,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
       for (var tx in txData) {
         if (tx['instruments'] == null) continue;
         String name = tx['instruments']['name'];
-        String isin = tx['instruments']['ticker_isin'];
+        String isin = tx['instruments']['ticker_isin'] ?? '';
         String type = tx['transaction_type'];
         double qty = (tx['quantity'] ?? 0).toDouble();
         double price = (tx['unit_price'] ?? 0).toDouble();
@@ -192,6 +525,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
             'name': name,
             'isin': isin,
             'id': tx['instruments']['id'],
+            'category': tx['instruments']['category'],
+            'comment': tx['instruments']['comment'],
             'quantity': 0.0,
             'totalBoughtQty': 0.0,
             'totalInvested': 0.0,
@@ -204,7 +539,13 @@ class _PositionsScreenState extends State<PositionsScreen> {
           tempPositions[name]!['totalBoughtQty'] += qty;
           tempPositions[name]!['totalInvested'] += (qty * price);
         } else if (type == 'Sell') {
+          // CORRECTION: Diminuer le total investi proportionnellement (correction PRU)
+          double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
+              ? tempPositions[name]!['totalInvested'] / tempPositions[name]!['totalBoughtQty']
+              : 0.0;
           tempPositions[name]!['quantity'] -= qty;
+          tempPositions[name]!['totalBoughtQty'] -= qty;
+          tempPositions[name]!['totalInvested'] -= (qty * currentPru);
         }
       }
 
@@ -213,39 +554,50 @@ class _PositionsScreenState extends State<PositionsScreen> {
       double totalInvested = 0.0;
 
       for (var pos in tempPositions.values) {
-        // CORRECTION : On ignore les "poussières" inférieures à 0.001 (les actions vendues à 100%)
         if (pos['quantity'] > 0.001) {
-          
-          // Sécurité anti division par zéro
-          pos['pru'] = pos['totalBoughtQty'] > 0.001 ? (pos['totalInvested'] / pos['totalBoughtQty']) : 0.0;
-          
-          double? livePrice = await _fetchLivePrice(pos['name'], pos['isin'], pos['id']);
+          // On ignore totalement le cash
+          if (pos['name'].toString().toLowerCase().contains('liquidit') ||
+              pos['name'].toString().toUpperCase().contains('CASH')) {
+            continue;
+          }
+
+          pos['pru'] = pos['totalBoughtQty'] > 0.001
+              ? (pos['totalInvested'] / pos['totalBoughtQty'])
+              : 0.0;
+
+          double? livePrice = await PriceService.fetchLivePrice(
+              pos['name'], pos['isin'], pos['id']);
           pos['currentPrice'] = livePrice;
-          
+
           if (livePrice != null && !livePrice.isNaN) {
             pos['totalValue'] = livePrice * pos['quantity'];
           } else {
             pos['totalValue'] = pos['pru'] * pos['quantity'];
           }
-          
-          // Sécurité ultime pour le total global
+
+          await AlertsService.checkAlerts(pos, livePrice);
+
           if (!pos['totalValue'].isNaN) {
             totalGlobalValue += pos['totalValue'];
           }
           if (!pos['pru'].isNaN && !pos['quantity'].isNaN) {
             totalInvested += (pos['pru'] * pos['quantity']);
           }
-          
+
           finalPositions.add(pos);
         }
       }
 
-      finalPositions.sort((a, b) => (b['totalValue'] as double).compareTo(a['totalValue'] as double));
+      finalPositions.sort(
+        (a, b) =>
+            (b['totalValue'] as double).compareTo(a['totalValue'] as double),
+      );
 
       if (mounted) {
         setState(() {
           _positions = finalPositions;
-          _totalPortfolioValue = totalGlobalValue.isNaN ? 0.0 : totalGlobalValue;
+          _totalPortfolioValue =
+              totalGlobalValue.isNaN ? 0.0 : totalGlobalValue;
           _totalInvestedValue = totalInvested.isNaN ? 0.0 : totalInvested;
           _isLoading = false;
         });
@@ -260,7 +612,9 @@ class _PositionsScreenState extends State<PositionsScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (BuildContext context) {
         return SafeArea(
           child: Padding(
@@ -268,30 +622,62 @@ class _PositionsScreenState extends State<PositionsScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                
                 ListTile(
-                  leading: const CircleAvatar(backgroundColor: Color.fromARGB(255, 116, 114, 114), child: Icon(Icons.swap_horiz, color: Colors.white)),
-                  title: const Text('Transaction', style: TextStyle(color: Colors.white)),
+                  leading: const CircleAvatar(
+                    backgroundColor: Color.fromARGB(255, 116, 114, 114),
+                    child: Icon(Icons.swap_horiz, color: Colors.white),
+                  ),
+                  title: const Text(
+                    'Transaction',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () async {
                     Navigator.pop(context);
-                    final result = await Navigator.push(context, MaterialPageRoute(builder: (context) => const AddTransactionScreen()));
+                    final result = await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const AddTransactionScreen(),
+                      ),
+                    );
                     if (result == true) _loadPositions();
                   },
                 ),
                 ListTile(
-                  leading: CircleAvatar(backgroundColor:Color.fromARGB(255, 116, 114, 114), child: const Icon(Icons.business_center, color: Colors.white)),
-                  title: const Text('Instrument', style: TextStyle(color: Colors.white)),
-                  onTap: () {
+                  leading: const CircleAvatar(
+                    backgroundColor: Color.fromARGB(255, 116, 114, 114),
+                    child: Icon(Icons.business_center, color: Colors.white),
+                  ),
+                  title: const Text(
+                    'Instrument',
+                    style: TextStyle(color: Colors.white),
+                  ),
+                  onTap: () async {
                     Navigator.pop(context);
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const AddInstrumentScreen()));
+                    await Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const AddInstrumentScreen(),
+                      ),
+                    );
                   },
                 ),
                 ListTile(
-                  leading: const CircleAvatar(backgroundColor: Color.fromARGB(255, 116, 114, 114), child: Icon(Icons.account_balance, color: Colors.white)),
-                  title: const Text('Compte', style: TextStyle(color: Colors.white)),
+                  leading: const CircleAvatar(
+                    backgroundColor: Color.fromARGB(255, 116, 114, 114),
+                    child: Icon(Icons.account_balance, color: Colors.white),
+                  ),
+                  title: const Text(
+                    'Compte',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     Navigator.pop(context);
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const AddAccountScreen()));
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const AddAccountScreen(),
+                      ),
+                    );
                   },
                 ),
               ],
@@ -304,10 +690,9 @@ class _PositionsScreenState extends State<PositionsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Calcul sécurisé de la progression globale
     double globalPerfPct = 0.0;
     double globalPerfAbs = 0.0;
-    
+
     if (!_totalPortfolioValue.isNaN && !_totalInvestedValue.isNaN) {
       globalPerfAbs = _totalPortfolioValue - _totalInvestedValue;
       if (_totalInvestedValue > 0.001) {
@@ -315,109 +700,205 @@ class _PositionsScreenState extends State<PositionsScreen> {
       }
     }
 
-    Color globalColor = globalPerfAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
+    Color globalColor =
+        globalPerfAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
     String globalSign = globalPerfAbs >= 0 ? "+" : "";
 
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Positions', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'Positions',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
         backgroundColor: Colors.black,
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadPositions)
+          IconButton(
+            icon: const Icon(Icons.add, color: Colors.white),
+            onPressed: () => _showAddMenu(context),
+          ),
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : Column(
               children: [
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 15,
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // 1. La performance globale passe en premier tout en haut
-                      Text(
-                        "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)", 
-                        style: TextStyle(color: globalColor, fontSize: 18, fontWeight: FontWeight.bold)
+                      const Text(
+                        "Capital Total Actuel",
+                        style: TextStyle(color: Colors.white54, fontSize: 13),
                       ),
-                      const SizedBox(height: 5),
-                      // 2. Le capital total actuel passe juste en dessous en plus petit / discret
-                      const Text("Capital Total Actuel", style: TextStyle(color: Colors.white54, fontSize: 13)),
                       const SizedBox(height: 2),
-                      Text("${_totalPortfolioValue.toStringAsFixed(2)} €", style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold)),
+                      Text(
+                        "${_totalPortfolioValue.toStringAsFixed(2)} €",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 26,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
+                        style: TextStyle(
+                          color: globalColor,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ],
                   ),
                 ),
-                
                 Expanded(
                   child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
                     itemCount: _positions.length,
                     itemBuilder: (context, index) {
                       final pos = _positions[index];
                       double currentPrice = pos['currentPrice'] ?? 0.0;
                       double pru = pos['pru'];
-                      
+
                       Color valueColor = Colors.white;
                       String perfText = "";
-                      
-                      // Calcul sécurisé de la progression individuelle
-                      if (currentPrice > 0 && pru > 0 && !currentPrice.isNaN && !pru.isNaN) {
+
+                      if (currentPrice > 0 &&
+                          pru > 0 &&
+                          !currentPrice.isNaN &&
+                          !pru.isNaN) {
                         double perfRatio = ((currentPrice - pru) / pru) * 100;
                         String sign = perfRatio >= 0 ? "+" : "";
-                        perfText = " $sign${perfRatio.toStringAsFixed(2)}%";
-                        
-                        if (currentPrice > pru) valueColor = Colors.greenAccent;
-                        else if (currentPrice < pru) valueColor = Colors.redAccent;
+                        perfText = "$sign${perfRatio.toStringAsFixed(2)}%";
+
+                        if (currentPrice > pru) {
+                          valueColor = Colors.greenAccent;
+                        } else if (currentPrice < pru) {
+                          valueColor = Colors.redAccent;
+                        }
                       }
 
                       return Card(
                         color: const Color(0xFF1C1C1E),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                         margin: const EdgeInsets.only(bottom: 10),
-                        child: Padding(
-                          padding: const EdgeInsets.all(14.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(pos['name'], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 16)),
-                                    const SizedBox(height: 6),
-                                    Text("Qté: ${pos['quantity'].toStringAsFixed(2)}", style: const TextStyle(color: Colors.white54, fontSize: 13)),
-                                    Text("PRU: ${pru.toStringAsFixed(2)} €", style: const TextStyle(color: Colors.white54, fontSize: 13)),
-                                  ],
-                                ),
-                              ),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: [
-                                  Text(
-                                    pos['currentPrice'] != null ? "${pos['totalValue'].toStringAsFixed(2)} €" : "-- €",
-                                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: valueColor),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(10),
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  InstrumentDetailScreen(instrument: pos),
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(14.0),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
-                                        pos['currentPrice'] != null ? "Actuel: ${currentPrice.toStringAsFixed(2)} €" : "Non coté",
-                                        style: const TextStyle(color: Colors.white54, fontSize: 13),
-                                      ),
-                                      if (perfText.isNotEmpty)
-                                        Text(
-                                          perfText,
-                                          style: TextStyle(color: valueColor, fontSize: 13, fontWeight: FontWeight.bold),
+                                        pos['name'],
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.white,
+                                          fontSize: 16,
                                         ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        "Qté: ${pos['quantity'].toStringAsFixed(2)}",
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      Text(
+                                        "PRU: ${pru.toStringAsFixed(2)} €",
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13,
+                                        ),
+                                      ),
                                     ],
                                   ),
-                                ],
-                              ),
-                            ],
+                                ),
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      pos['currentPrice'] != null
+                                          ? "${pos['totalValue'].toStringAsFixed(2)} €"
+                                          : "-- €",
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                        color: valueColor,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    if (perfText.isNotEmpty)
+                                      Text(
+                                        perfText,
+                                        style: TextStyle(
+                                          color: valueColor,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    if (currentPrice > 0 && pru > 0) ...[
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        "PV Totale: ${((currentPrice - pru) * pos['quantity']) >= 0 ? '+' : ''}${((currentPrice - pru) * pos['quantity']).toStringAsFixed(2)} €",
+                                        style: TextStyle(
+                                          color: (currentPrice - pru) >= 0
+                                              ? Colors.greenAccent
+                                              : Colors.redAccent,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      pos['currentPrice'] != null
+                                          ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
+                                          : "Non coté",
+                                      style: const TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                IconButton(
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  icon: const Icon(
+                                    Icons.notifications_none,
+                                    color: Colors.white38,
+                                    size: 20,
+                                  ),
+                                  onPressed: () =>
+                                      showCreateAlertDialog(context, pos),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       );
@@ -426,15 +907,257 @@ class _PositionsScreenState extends State<PositionsScreen> {
                 ),
               ],
             ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: Colors.blueAccent,
-        foregroundColor: Colors.white,
-        onPressed: () => _showAddMenu(context),
-        child: const Icon(Icons.add),
-      ),
     );
   }
 }
+
+// ==========================================
+// 2bis. LA PAGE "WATCHLIST"
+// ==========================================
+class WatchlistScreen extends StatefulWidget {
+  const WatchlistScreen({super.key});
+
+  @override
+  State<WatchlistScreen> createState() => _WatchlistScreenState();
+}
+
+class _WatchlistScreenState extends State<WatchlistScreen> {
+  final supabase = Supabase.instance.client;
+  bool _isLoading = true;
+  List<Map<String, dynamic>> _watchlist = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWatchlist();
+  }
+
+  Future<void> _loadWatchlist() async {
+    setState(() => _isLoading = true);
+    final data = await supabase
+        .from('instruments')
+        .select('*')
+        .eq('is_watchlist', true);
+
+    List<Map<String, dynamic>> list = List<Map<String, dynamic>>.from(data);
+
+    List<Future> futures = list.map((inst) async {
+      String isin = inst['ticker_isin'] ?? '';
+      double? price = await PriceService.fetchLivePrice(
+          inst['name'], isin, inst['id']);
+      inst['currentPrice'] = price;
+      inst['isin'] = isin;
+    }).toList();
+
+    await Future.wait(futures);
+
+    if (mounted) setState(() { _watchlist = list; _isLoading = false; });
+  }
+
+  Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
+    final TextEditingController priceController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: Text(
+          "Prix manuel : ${inst['name']}",
+          style: const TextStyle(color: Colors.white),
+        ),
+        content: TextField(
+          controller: priceController,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: "Entrez le prix unitaire",
+            hintStyle: TextStyle(color: Colors.white54),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.blueAccent),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Annuler"),
+          ),
+          TextButton(
+            onPressed: () async {
+              double? newPrice = double.tryParse(
+                priceController.text.replaceAll(',', '.'),
+              );
+              if (newPrice != null) {
+                final today = DateTime.now().toIso8601String().split('T')[0];
+                await supabase.from('daily_prices').upsert({
+                  'instrument_id': inst['id'],
+                  'date': today,
+                  'price': newPrice,
+                });
+                Navigator.pop(context);
+                _loadWatchlist();
+              }
+            },
+            child: const Text(
+              "Enregistrer",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text(
+          'Watchlist',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: Colors.black,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            onPressed: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) =>
+                      const AddInstrumentScreen(isWatchlist: true),
+                ),
+              );
+              if (result == true) _loadWatchlist();
+            },
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
+          : _watchlist.isEmpty
+              ? const Center(
+                  child: Text(
+                    "Aucune valeur suivie pour l'instant",
+                    style: TextStyle(color: Colors.white54),
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  itemCount: _watchlist.length,
+                  itemBuilder: (context, index) {
+                    final inst = _watchlist[index];
+                    double? price = inst['currentPrice'];
+
+                    return Card(
+                      color: const Color(0xFF1C1C1E),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      margin: const EdgeInsets.only(bottom: 10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  InstrumentDetailScreen(instrument: inst),
+                            ),
+                          );
+                          _loadWatchlist();
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.all(14.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      inst['name'],
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    if ((inst['isin'] ?? '').toString().isNotEmpty)
+                                      Text(
+                                        inst['isin'],
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                    if ((inst['category'] ?? '')
+                                        .toString()
+                                        .isNotEmpty)
+                                      Padding(
+                                        padding:
+                                            const EdgeInsets.only(top: 4),
+                                        child: Text(
+                                          inst['category'],
+                                          style: const TextStyle(
+                                            color: Colors.blueAccent,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    price != null
+                                        ? "${price.toStringAsFixed(2)} €"
+                                        : "Non coté",
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.edit,
+                                      color: Colors.white38,
+                                      size: 20,
+                                    ),
+                                    onPressed: () =>
+                                        _showManualPriceDialog(inst),
+                                  ),
+                                  IconButton(
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                    icon: const Icon(
+                                      Icons.notifications_none,
+                                      color: Colors.white38,
+                                      size: 20,
+                                    ),
+                                    onPressed: () =>
+                                        showCreateAlertDialog(context, inst),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+    );
+  }
+}
+
 // ==========================================
 // 3. LA PAGE "PERFORMANCE"
 // ==========================================
@@ -447,12 +1170,16 @@ class PerformanceScreen extends StatefulWidget {
 }
 
 class _PerformanceScreenState extends State<PerformanceScreen> {
+  List<Map<String, dynamic>> _benchmarkList = [];
+  String? _selectedBenchmarkId;
+  List<FlSpot> _chartDataBenchmark = [];
+
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
-  
+
   String _selectedPeriod = '1M';
   final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
-  
+
   List<Map<String, dynamic>> _accountsList = [];
   String? _selectedAccountId;
 
@@ -460,17 +1187,16 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   double _periodPerformanceAbs = 0.0;
   double _periodPerformancePct = 0.0;
   double _currentPortfolioValue = 0.0;
-  
-  // NOUVEAU : Deux listes pour stocker les deux graphiques
+
   List<FlSpot> _chartDataValue = [];
   List<FlSpot> _chartDataPercent = [];
-  bool _showPercent = false; // Permet de basculer entre Valeur et Profit
-  
-  List<String> _chartDates = []; 
+  bool _showPercent = false;
+
+  List<String> _chartDates = [];
 
   List<Map<String, dynamic>> _allTransactions = [];
-  Map<String, Map<String, double>> _yahooHistories = {}; 
-  Map<String, Map<String, dynamic>> _aferData = {}; 
+  Map<String, Map<String, double>> _yahooHistories = {};
+  Map<String, Map<String, dynamic>> _aferData = {};
 
   @override
   void initState() {
@@ -497,9 +1223,16 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       final instrumentsData = await supabase.from('instruments').select('*');
       for (var inst in instrumentsData) {
         String name = inst['name'];
-        if (name.startsWith('EPA:')) {
-          _yahooHistories[name] = await _fetchYahooHistory(name);
-        } else {
+        String isin = inst['ticker_isin'] ?? '';
+        
+        if (name.startsWith('EPA:') || (isin.isNotEmpty && isin != 'CASH')) {
+          var hist = await PriceService.fetchYahooHistory(name, isin: isin);
+          if (hist.isNotEmpty) {
+            _yahooHistories[name] = hist;
+          }
+        } 
+        
+        if (!_yahooHistories.containsKey(name)) {
           var aferBuys = _allTransactions.where((tx) => tx['instruments'] != null && tx['instruments']['name'] == name && (tx['transaction_type'] == 'Buy' || tx['transaction_type'] == 'Deposit')).toList();
           
           if (aferBuys.isNotEmpty) {
@@ -526,12 +1259,17 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         }
       }
 
+      final benchmarkData = await supabase.from('instruments').select('id, name').order('name');
+
       if (mounted) {
         setState(() {
           _accountsList = [{'id': 'ALL', 'name': 'Tous les comptes'}, ...List<Map<String, dynamic>>.from(accountsData)];
           if (_selectedAccountId == null && _accountsList.isNotEmpty) {
             _selectedAccountId = 'ALL';
           }
+          
+          _benchmarkList = [{'id': 'NONE', 'name': 'Aucun Benchmark'}, ...List<Map<String, dynamic>>.from(benchmarkData)];
+          if (_selectedBenchmarkId == null) _selectedBenchmarkId = 'NONE';
         });
         _calculateChart(); 
       }
@@ -540,32 +1278,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
-  }
-
-  Future<Map<String, double>> _fetchYahooHistory(String instrumentName) async {
-    Map<String, double> history = {};
-    String yahooSymbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
-    final targetUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol?range=5y&interval=1d';
-    final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-
-    try {
-      final response = await http.get(proxyUrl);
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final result = data['chart']['result'][0];
-        List<dynamic> timestamps = result['timestamp'];
-        List<dynamic> closePrices = result['indicators']['quote'][0]['close'];
-
-        for (int i = 0; i < timestamps.length; i++) {
-          if (closePrices[i] != null) {
-            DateTime date = DateTime.fromMillisecondsSinceEpoch(timestamps[i] * 1000);
-            String dateString = date.toIso8601String().split('T')[0];
-            history[dateString] = (closePrices[i] as num).toDouble();
-          }
-        }
-      }
-    } catch (e) {}
-    return history;
   }
 
   void _calculateChart() {
@@ -587,7 +1299,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     else if (_selectedPeriod == 'ALL') {
       if (filteredTx.isNotEmpty) {
         startDate = DateTime.parse(filteredTx.first['date'].toString().split('T')[0]);
-        DateTime maxPast = endDate.subtract(const Duration(days: 365 * 5));
+        DateTime maxPast = endDate.subtract(const Duration(days: 365 * 10));
         if (startDate.isBefore(maxPast)) startDate = maxPast;
       } else {
         startDate = endDate.subtract(const Duration(days: 30));
@@ -606,18 +1318,26 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     List<FlSpot> spotsValue = [];
     List<FlSpot> spotsPercent = [];
+    List<FlSpot> spotsBenchmark = [];
+    List<double> investedSeries = [];
     _chartDates.clear(); 
     
-    double firstValue = 0.0;
     double lastValue = 0.0;
     int dayIndex = 0;
+    double benchStartPrice = 0.0;
+    String? benchName;
+    if (_selectedBenchmarkId != 'NONE' && _selectedBenchmarkId != null) {
+      try {
+        benchName = _benchmarkList.firstWhere((e) => e['id'].toString() == _selectedBenchmarkId)['name'];
+      } catch(e) {}
+    }
 
     for (DateTime d = startDate; d.isBefore(endDate) || d.isAtSameMomentAs(endDate); d = d.add(const Duration(days: 1))) {
       String currentDateStr = d.toIso8601String().split('T')[0];
       
-      // NOUVEAU : Calcul du capital investi et de la valeur pour chaque jour
       Map<String, Map<String, double>> instStats = {};
-      
+      double dailyRealizedGains = 0.0; 
+
       for (var tx in filteredTx) {
         DateTime txDate = DateTime.parse(tx['date'].toString().split('T')[0]);
         if (txDate.isAfter(d)) continue; 
@@ -637,50 +1357,56 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           instStats[instName]!['boughtQty'] = instStats[instName]!['boughtQty']! + q;
           instStats[instName]!['invested'] = instStats[instName]!['invested']! + (q * p);
         } else if (type == 'Sell') {
+          // CORRECTION: Diminuer le total investi proportionnellement (correction PRU)
+          double currentPru = instStats[instName]!['boughtQty']! > 0.001 ? instStats[instName]!['invested']! / instStats[instName]!['boughtQty']! : 0.0;
+          dailyRealizedGains += q * (p - currentPru);
           instStats[instName]!['qty'] = instStats[instName]!['qty']! - q;
+          instStats[instName]!['boughtQty'] = instStats[instName]!['boughtQty']! - q;
+          instStats[instName]!['invested'] = instStats[instName]!['invested']! - (q * currentPru);
+        } else if (type == 'Dividend') {
+          dailyRealizedGains += (q * p);
         }
       }
 
-      double dailyPortfolioValue = 0.0;
+      double dailyPortfolioValue = dailyRealizedGains; 
       double dailyInvestedCapital = 0.0;
 
       instStats.forEach((instName, stats) {
         double qty = stats['qty']!;
         if (qty <= 0.001) return;
         
-        // Calcul du PRU exact à ce jour précis
+        // On exclut le cash
+        if (instName.toLowerCase().contains('liquidit') || instName.toUpperCase().contains('CASH')) return;
+
         double pru = stats['boughtQty']! > 0.001 ? stats['invested']! / stats['boughtQty']! : 0.0;
         dailyInvestedCapital += (pru * qty);
 
-        double price = 0.0;
-        if (instName.startsWith('EPA:')) {
-          var hist = _yahooHistories[instName];
-          if (hist != null) {
-            for (int i = 0; i < 5; i++) {
-              String lookbackDate = d.subtract(Duration(days: i)).toIso8601String().split('T')[0];
-              if (hist.containsKey(lookbackDate)) {
-                price = hist[lookbackDate]!;
-                break;
-              }
+        // CORRECTION: Le prix par défaut est le PRU (pas 0.0) pour éviter les trous noirs si Yahoo manque un jour
+        double price = pru; 
+        
+        if (_yahooHistories.containsKey(instName)) {
+          var hist = _yahooHistories[instName]!;
+          for (int i = 0; i < 7; i++) { 
+            String lookbackDate = d.subtract(Duration(days: i)).toIso8601String().split('T')[0];
+            if (hist.containsKey(lookbackDate)) {
+              price = hist[lookbackDate]!;
+              break;
             }
           }
-        } else {
+        } 
+        else {
           var aferInfo = _aferData[instName];
           if (aferInfo != null) {
             DateTime firstDate = aferInfo['firstDate'];
             double globalPru = aferInfo['pru'];
             double latestPrice = aferInfo['latestPrice'];
             
-            if (d.isBefore(firstDate)) {
+            if (d.isBefore(firstDate) || endDate.difference(firstDate).inDays <= 0) {
               price = globalPru;
             } else {
               int totalDays = endDate.difference(firstDate).inDays;
-              if (totalDays <= 0) {
-                price = globalPru;
-              } else {
-                int daysSinceFirst = d.difference(firstDate).inDays;
-                price = globalPru + ((latestPrice - globalPru) * (daysSinceFirst / totalDays));
-              }
+              int daysSinceFirst = d.difference(firstDate).inDays;
+              price = globalPru + ((latestPrice - globalPru) * (daysSinceFirst / totalDays));
             }
           }
         }
@@ -688,240 +1414,420 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         dailyPortfolioValue += (qty * price);
       });
 
-      // Calcul du pourcentage de profit ce jour-là
-      double dailyPct = dailyInvestedCapital > 0.001 
-          ? ((dailyPortfolioValue - dailyInvestedCapital) / dailyInvestedCapital) * 100 
-          : 0.0;
+      investedSeries.add(dailyInvestedCapital);
+      double dailyPct = dailyInvestedCapital > 0.001 ? ((dailyPortfolioValue - dailyInvestedCapital) / dailyInvestedCapital) * 100 : 0.0;
 
       spotsValue.add(FlSpot(dayIndex.toDouble(), dailyPortfolioValue));
       spotsPercent.add(FlSpot(dayIndex.toDouble(), dailyPct));
-      _chartDates.add(currentDateStr); 
       
-      if (dayIndex == 0) firstValue = dailyPortfolioValue;
+      if (benchName != null) {
+        double benchPrice = benchStartPrice > 0 ? benchStartPrice : 1.0; 
+        if (_yahooHistories.containsKey(benchName)) {
+          var hist = _yahooHistories[benchName]!;
+          for (int i = 0; i < 7; i++) {
+            String lookbackDate = d.subtract(Duration(days: i)).toIso8601String().split('T')[0];
+            if (hist.containsKey(lookbackDate)) {
+              benchPrice = hist[lookbackDate]!;
+              break;
+            }
+          }
+        } else {
+          var aferInfo = _aferData[benchName];
+          if (aferInfo != null) {
+            double globalPru = aferInfo['pru'];
+            double latestPrice = aferInfo['latestPrice'];
+            DateTime firstDate = aferInfo['firstDate'];
+            if (d.isBefore(firstDate) || endDate.difference(firstDate).inDays <= 0) {
+              benchPrice = globalPru;
+            } else {
+              benchPrice = globalPru + ((latestPrice - globalPru) * (d.difference(firstDate).inDays / endDate.difference(firstDate).inDays));
+            }
+          }
+        }
+
+        if (dayIndex == 0 || benchStartPrice == 0.0) {
+          benchStartPrice = benchPrice;
+        }
+        double benchPct = benchStartPrice > 0.001 ? ((benchPrice - benchStartPrice) / benchStartPrice) * 100 : 0.0;
+        spotsBenchmark.add(FlSpot(dayIndex.toDouble(), benchPct));
+      }
+
+      _chartDates.add(currentDateStr); 
       lastValue = dailyPortfolioValue;
       dayIndex++;
     }
+
+    double startValue = spotsValue.isNotEmpty ? spotsValue.first.y : 0.0;
+    double endValue = spotsValue.isNotEmpty ? spotsValue.last.y : 0.0;
+    double startInvested = investedSeries.isNotEmpty ? investedSeries.first : 0.0;
+    double endInvested = investedSeries.isNotEmpty ? investedSeries.last : 0.0;
+    
+    double netDeposits = endInvested - startInvested;
+    double periodAbs = (endValue - startValue) - netDeposits;
+    double periodPct = startValue > 0.001 
+        ? (periodAbs / startValue) * 100 
+        : (endInvested > 0 ? (periodAbs / endInvested) * 100 : 0.0);
 
     setState(() {
       _totalDividends = divs;
       _currentPortfolioValue = lastValue.isNaN ? 0.0 : lastValue;
       _chartDataValue = spotsValue;
       _chartDataPercent = spotsPercent;
-      _periodPerformanceAbs = lastValue - firstValue;
-      _periodPerformancePct = firstValue > 0.001 ? (_periodPerformanceAbs / firstValue) * 100 : 0.0;
+      _chartDataBenchmark = spotsBenchmark;
+      _periodPerformanceAbs = periodAbs;
+      _periodPerformancePct = periodPct;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // On sélectionne la liste de points à afficher en fonction du bouton choisi
-    List<FlSpot> activeChartData = _showPercent ? _chartDataPercent : _chartDataValue;
+    List<FlSpot> activeChartData =
+        _showPercent ? _chartDataPercent : _chartDataValue;
 
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Performance', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text(
+          'Performance',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.blueAccent))
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : Column(
               children: [
                 Container(
-                  color: Colors.black, 
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: Colors.black,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
-                      isExpanded: true, 
-                      dropdownColor: const Color(0xFF1C1C1E), 
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF1C1C1E),
                       value: _selectedAccountId,
-                      icon: const Icon(Icons.keyboard_arrow_down, color: Colors.blueAccent),
+                      icon: const Icon(
+                        Icons.keyboard_arrow_down,
+                        color: Colors.blueAccent,
+                      ),
                       items: _accountsList.map((acc) {
                         return DropdownMenuItem<String>(
                           value: acc['id'].toString(),
-                          child: Text(acc['name'], style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+                          child: Text(
+                            acc['name'],
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
                         );
                       }).toList(),
                       onChanged: (value) {
                         setState(() => _selectedAccountId = value);
-                        _calculateChart(); 
+                        _calculateChart();
                       },
                     ),
                   ),
                 ),
-
                 Container(
-                  width: double.infinity, 
-                  color: const Color(0xFF1C1C1E), 
+                  color: Colors.black,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 0,
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF1C1C1E),
+                      value: _selectedBenchmarkId,
+                      icon: const Icon(
+                        Icons.compare_arrows,
+                        color: Colors.purpleAccent,
+                      ),
+                      items: _benchmarkList.map((inst) {
+                        return DropdownMenuItem<String>(
+                          value: inst['id'].toString(),
+                          child: Text(
+                            inst['name'],
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.purpleAccent,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        setState(() => _selectedBenchmarkId = value);
+                        _calculateChart();
+                      },
+                    ),
+                  ),
+                ),
+                Container(
+                  width: double.infinity,
+                  color: const Color(0xFF1C1C1E),
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     children: [
-                      Text("${_currentPortfolioValue.toStringAsFixed(2)} €", style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.white)),
+                      Text(
+                        "${_currentPortfolioValue.toStringAsFixed(2)} €",
+                        style: const TextStyle(
+                          fontSize: 36,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
                       const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(
-                            _periodPerformanceAbs >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
-                            color: _periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent, size: 20,
+                            _periodPerformanceAbs >= 0
+                                ? Icons.arrow_upward
+                                : Icons.arrow_downward,
+                            color: _periodPerformanceAbs >= 0
+                                ? Colors.greenAccent
+                                : Colors.redAccent,
+                            size: 20,
                           ),
                           Text(
                             "${_periodPerformanceAbs >= 0 ? '+' : ''}${_periodPerformanceAbs.toStringAsFixed(2)} € (${_periodPerformancePct >= 0 ? '+' : ''}${_periodPerformancePct.toStringAsFixed(2)}%)",
                             style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold,
-                              color: _periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: _periodPerformanceAbs >= 0
+                                  ? Colors.greenAccent
+                                  : Colors.redAccent,
                             ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 16),
-                      
-                      // Les boutons pour basculer entre Valeur et Profit
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           GestureDetector(
                             onTap: () => setState(() => _showPercent = false),
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
-                                color: !_showPercent ? Colors.blueAccent : Colors.transparent,
+                                color: !_showPercent
+                                    ? Colors.blueAccent
+                                    : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(color: Colors.blueAccent),
                               ),
-                              child: Text("Valeur (€)", style: TextStyle(color: !_showPercent ? Colors.white : Colors.blueAccent, fontWeight: FontWeight.bold)),
+                              child: Text(
+                                "Valeur (€)",
+                                style: TextStyle(
+                                  color: !_showPercent
+                                      ? Colors.white
+                                      : Colors.blueAccent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
                           ),
                           const SizedBox(width: 10),
                           GestureDetector(
                             onTap: () => setState(() => _showPercent = true),
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 20,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
-                                color: _showPercent ? Colors.blueAccent : Colors.transparent,
+                                color: _showPercent
+                                    ? Colors.blueAccent
+                                    : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(color: Colors.blueAccent),
                               ),
-                              child: Text("Profit (%)", style: TextStyle(color: _showPercent ? Colors.white : Colors.blueAccent, fontWeight: FontWeight.bold)),
+                              child: Text(
+                                "Profit (%)",
+                                style: TextStyle(
+                                  color: _showPercent
+                                      ? Colors.white
+                                      : Colors.blueAccent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                             ),
                           ),
                         ],
                       ),
-                      
-                      // LE RETOUR DE L'AFFICHAGE DES DIVIDENDES ICI :
                       const SizedBox(height: 16),
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(color: Colors.blueAccent.withOpacity(0.1), borderRadius: BorderRadius.circular(20)),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                            color: Colors.blueAccent.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(20)),
                         child: Text(
                           "Dividendes encaissés : ${_totalDividends.toStringAsFixed(2)} €",
-                          style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              color: Colors.blueAccent,
+                              fontWeight: FontWeight.bold),
                         ),
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(height: 20),
-
                 Expanded(
                   child: Padding(
-                    padding: const EdgeInsets.only(right: 20, left: 10, bottom: 20),
-                    child: activeChartData.isEmpty 
-                    ? const Center(child: Text("Pas de données sur cette période", style: TextStyle(color: Colors.white54)))
-                    : LineChart(
-                      LineChartData(
-                        gridData: FlGridData(
-                          show: true,
-                          drawVerticalLine: false,
-                          getDrawingHorizontalLine: (value) => FlLine(color: Colors.white10, strokeWidth: 1),
-                        ),
-                        titlesData: FlTitlesData(
-                          show: true,
-                          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                          bottomTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 30,
-                              interval: (activeChartData.length / 5).ceilToDouble() == 0 ? 1 : (activeChartData.length / 5).ceilToDouble(),
-                              getTitlesWidget: (value, meta) {
-                                int index = value.toInt();
-                                if (index >= 0 && index < _chartDates.length) {
-                                  DateTime d = DateTime.parse(_chartDates[index]);
-                                  String day = d.day.toString().padLeft(2, '0');
-                                  String month = d.month.toString().padLeft(2, '0');
-                                  
-                                  if (_selectedPeriod == 'ALL' || _selectedPeriod == '1A') {
-                                    return Padding(
-                                      padding: const EdgeInsets.only(top: 8.0),
-                                      child: Text('$month/${d.year.toString().substring(2)}', style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                    );
-                                  }
-                                  
-                                  return Padding(
-                                    padding: const EdgeInsets.only(top: 8.0),
-                                    child: Text('$day/$month', style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                                  );
-                                }
-                                return const Text('');
-                              },
+                    padding:
+                        const EdgeInsets.only(right: 20, left: 10, bottom: 20),
+                    child: activeChartData.isEmpty
+                        ? const Center(
+                            child: Text("Pas de données sur cette période",
+                                style: TextStyle(color: Colors.white54)))
+                        : LineChart(
+                            LineChartData(
+                              gridData: FlGridData(
+                                show: true,
+                                drawVerticalLine: false,
+                                getDrawingHorizontalLine: (value) => FlLine(
+                                    color: Colors.white10, strokeWidth: 1),
+                              ),
+                              titlesData: FlTitlesData(
+                                show: true,
+                                rightTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false)),
+                                topTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false)),
+                                bottomTitles: AxisTitles(
+                                  sideTitles: SideTitles(
+                                    showTitles: true,
+                                    reservedSize: 30,
+                                    interval: (activeChartData.length / 5)
+                                                .ceilToDouble() ==
+                                            0
+                                        ? 1
+                                        : (activeChartData.length / 5)
+                                            .ceilToDouble(),
+                                    getTitlesWidget: (value, meta) {
+                                      int index = value.toInt();
+                                      if (index >= 0 &&
+                                          index < _chartDates.length) {
+                                        DateTime d =
+                                            DateTime.parse(_chartDates[index]);
+                                        String day = d.day
+                                            .toString()
+                                            .padLeft(2, '0');
+                                        String month = d.month
+                                            .toString()
+                                            .padLeft(2, '0');
+
+                                        if (_selectedPeriod == 'ALL' ||
+                                            _selectedPeriod == '1A') {
+                                          return Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 8.0),
+                                            child: Text(
+                                                '$month/${d.year.toString().substring(2)}',
+                                                style: const TextStyle(
+                                                    color: Colors.white54,
+                                                    fontSize: 11)),
+                                          );
+                                        }
+
+                                        return Padding(
+                                          padding:
+                                              const EdgeInsets.only(top: 8.0),
+                                          child: Text('$day/$month',
+                                              style: const TextStyle(
+                                                  color: Colors.white54,
+                                                  fontSize: 11)),
+                                        );
+                                      }
+                                      return const Text('');
+                                    },
+                                  ),
+                                ),
+                                leftTitles: AxisTitles(
+                                  sideTitles: SideTitles(
+                                    showTitles: true,
+                                    reservedSize: 50,
+                                    getTitlesWidget: (value, meta) {
+                                      if (_showPercent) {
+                                        return Text('${value.toInt()}%',
+                                            style: const TextStyle(
+                                                color: Colors.white54,
+                                                fontSize: 11));
+                                      } else {
+                                        return Text('${value.toInt()} €',
+                                            style: const TextStyle(
+                                                color: Colors.white54,
+                                                fontSize: 11));
+                                      }
+                                    },
+                                  ),
+                                ),
+                              ),
+                              borderData: FlBorderData(show: false),
+                              lineTouchData: LineTouchData(
+                                touchTooltipData: LineTouchTooltipData(
+                                  getTooltipItems: (touchedSpots) {
+                                    return touchedSpots.map((spot) {
+                                      int index = spot.x.toInt();
+                                      String date = index < _chartDates.length
+                                          ? _chartDates[index]
+                                          : "";
+                                      String valStr = _showPercent
+                                          ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
+                                          : "${spot.y.toStringAsFixed(2)} €";
+
+                                      return LineTooltipItem(
+                                        "$date\n$valStr",
+                                        const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold),
+                                      );
+                                    }).toList();
+                                  },
+                                ),
+                              ),
+                              lineBarsData: [
+                                LineChartBarData(
+                                  spots: activeChartData,
+                                  isCurved: true,
+                                  color: _periodPerformanceAbs >= 0
+                                      ? Colors.greenAccent
+                                      : Colors.redAccent,
+                                  barWidth: 2,
+                                  isStrokeCapRound: true,
+                                  dotData: const FlDotData(show: false),
+                                  belowBarData: BarAreaData(
+                                    show: true,
+                                    color: (_periodPerformanceAbs >= 0
+                                            ? Colors.greenAccent
+                                            : Colors.redAccent)
+                                        .withOpacity(0.1),
+                                  ),
+                                ),
+                                if (_showPercent &&
+                                    _chartDataBenchmark.isNotEmpty)
+                                  LineChartBarData(
+                                    spots: _chartDataBenchmark,
+                                    isCurved: true,
+                                    color: Colors.purpleAccent,
+                                    barWidth: 2,
+                                    isStrokeCapRound: true,
+                                    dotData: const FlDotData(show: false),
+                                    belowBarData: BarAreaData(show: false),
+                                  ),
+                              ],
                             ),
                           ),
-                          leftTitles: AxisTitles(
-                            sideTitles: SideTitles(
-                              showTitles: true,
-                              reservedSize: 50, 
-                              getTitlesWidget: (value, meta) {
-                                // NOUVEAU : Changement de l'axe Y selon le mode choisi
-                                if (_showPercent) {
-                                  return Text('${value.toInt()}%', style: const TextStyle(color: Colors.white54, fontSize: 11));
-                                } else {
-                                  return Text('${value.toInt()} €', style: const TextStyle(color: Colors.white54, fontSize: 11));
-                                }
-                              },
-                            ),
-                          ),
-                        ),
-                        borderData: FlBorderData(show: false),
-                        lineTouchData: LineTouchData(
-                          touchTooltipData: LineTouchTooltipData(
-                            getTooltipItems: (touchedSpots) {
-                              return touchedSpots.map((spot) {
-                                int index = spot.x.toInt();
-                                String date = index < _chartDates.length ? _chartDates[index] : "";
-                                // NOUVEAU : Changement de l'infobulle selon le mode choisi
-                                String valStr = _showPercent
-                                    ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
-                                    : "${spot.y.toStringAsFixed(2)} €";
-                                    
-                                return LineTooltipItem(
-                                  "$date\n$valStr",
-                                  const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                                );
-                              }).toList();
-                            },
-                          ),
-                        ),
-                        lineBarsData: [
-                          LineChartBarData(
-                            spots: activeChartData,
-                            isCurved: true,
-                            color: _periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent,
-                            barWidth: 2, 
-                            isStrokeCapRound: true,
-                            dotData: const FlDotData(show: false), 
-                            belowBarData: BarAreaData(
-                              show: true,
-                              color: (_periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent).withOpacity(0.1),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
                   ),
                 ),
-
                 Container(
-                  color: Colors.black, 
+                  color: Colors.black,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -930,12 +1836,15 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       return GestureDetector(
                         onTap: () {
                           setState(() => _selectedPeriod = period);
-                          _calculateChart(); 
+                          _calculateChart();
                         },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
                           decoration: BoxDecoration(
-                            color: isSelected ? const Color(0xFF333333) : Colors.transparent,
+                            color: isSelected
+                                ? const Color(0xFF333333)
+                                : Colors.transparent,
                             borderRadius: BorderRadius.circular(15),
                           ),
                           child: Text(
@@ -956,6 +1865,469 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     );
   }
 }
+
+// ==========================================
+// 3bis. LA PAGE "DÉTAIL D'UNE VALEUR" (graph)
+// ==========================================
+class InstrumentDetailScreen extends StatefulWidget {
+  final Map<String, dynamic> instrument;
+  const InstrumentDetailScreen({super.key, required this.instrument});
+
+  @override
+  State<InstrumentDetailScreen> createState() => _InstrumentDetailScreenState();
+}
+
+class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
+  bool _isLoading = true;
+  String _selectedPeriod = '1M';
+  final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
+  List<FlSpot> _spots = [];
+  List<String> _dates = [];
+  Map<String, double> _fullHistory = {};
+  double? _currentPrice;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+  }
+
+  Future<void> _loadHistory() async {
+    setState(() => _isLoading = true);
+    String name = widget.instrument['name'];
+    String isin = widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
+    dynamic id = widget.instrument['id'];
+
+    try {
+      _fullHistory = await PriceService.fetchYahooHistory(name, isin: isin);
+
+      if (_fullHistory.isEmpty) {
+        final supabase = Supabase.instance.client;
+        final rows = await supabase
+            .from('daily_prices')
+            .select('date, price')
+            .eq('instrument_id', id)
+            .order('date');
+        for (var row in rows) {
+          _fullHistory[row['date'].toString().split('T')[0]] =
+              (row['price'] as num).toDouble();
+        }
+      }
+    } catch (e) {
+      print("Erreur historique: $e");
+    }
+
+    double? live = await PriceService.fetchLivePrice(name, isin, id);
+    _currentPrice = live;
+    if (live != null) {
+      final today = DateTime.now().toIso8601String().split('T')[0];
+      _fullHistory[today] = live;
+    }
+
+    _buildChart();
+    if (mounted) setState(() => _isLoading = false);
+  }
+
+  void _buildChart() {
+    if (_fullHistory.isEmpty) {
+      _spots = [];
+      _dates = [];
+      return;
+    }
+    List<String> sortedDates = _fullHistory.keys.toList()..sort();
+    DateTime endDate = DateTime.parse(sortedDates.last);
+    DateTime startDate = endDate;
+
+    if (_selectedPeriod == '1S') {
+      startDate = endDate.subtract(const Duration(days: 7));
+    } else if (_selectedPeriod == '1M') {
+      startDate = endDate.subtract(const Duration(days: 30));
+    } else if (_selectedPeriod == '3M') {
+      startDate = endDate.subtract(const Duration(days: 90));
+    } else if (_selectedPeriod == '1A') {
+      startDate = endDate.subtract(const Duration(days: 365));
+    } else if (_selectedPeriod == 'YTD') {
+      startDate = DateTime(endDate.year, 1, 1);
+    } else if (_selectedPeriod == 'ALL') {
+      startDate = DateTime.parse(sortedDates.first);
+    }
+
+    List<FlSpot> spots = [];
+    List<String> dates = [];
+    int i = 0;
+    for (var dateStr in sortedDates) {
+      DateTime d = DateTime.parse(dateStr);
+      if (d.isBefore(startDate)) continue;
+      spots.add(FlSpot(i.toDouble(), _fullHistory[dateStr]!));
+      dates.add(dateStr);
+      i++;
+    }
+    _spots = spots;
+    _dates = dates;
+  }
+
+  Future<void> _showEditInstrumentDialog() async {
+    String? selectedCategory = widget.instrument['category'];
+    if (selectedCategory != null && !kCategories.contains(selectedCategory)) {
+      selectedCategory = null;
+    }
+    final TextEditingController commentController =
+        TextEditingController(text: widget.instrument['comment'] ?? '');
+
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: Text("Modifier : ${widget.instrument['name']}",
+              style: const TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                value: selectedCategory,
+                dropdownColor: const Color(0xFF2C2C2E),
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Catégorie',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blueAccent)),
+                ),
+                items: kCategories
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (value) =>
+                    setDialogState(() => selectedCategory = value),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: commentController,
+                maxLines: 3,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  labelText: 'Commentaire',
+                  labelStyle: TextStyle(color: Colors.white54),
+                  enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blueAccent)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Annuler")),
+            TextButton(
+              onPressed: () async {
+                try {
+                  await Supabase.instance.client
+                      .from('instruments')
+                      .update({
+                        'category': selectedCategory,
+                        'comment': commentController.text.trim(),
+                      })
+                      .eq('id', widget.instrument['id']);
+
+                  setState(() {
+                    widget.instrument['category'] = selectedCategory;
+                    widget.instrument['comment'] =
+                        commentController.text.trim();
+                  });
+
+                  if (context.mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text("Instrument mis à jour !"),
+                          backgroundColor: Colors.green),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text("Erreur: $e"),
+                          backgroundColor: Colors.red),
+                    );
+                  }
+                }
+              },
+              child: const Text("Enregistrer",
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    double perfPct = 0.0;
+    Color perfColor = Colors.white;
+    if (_spots.length > 1) {
+      double first = _spots.first.y;
+      double last = _spots.last.y;
+      if (first > 0.001) perfPct = ((last - first) / first) * 100;
+      perfColor = perfPct >= 0 ? Colors.greenAccent : Colors.redAccent;
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: Text(widget.instrument['name'],
+            style: const TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.black,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_note, color: Colors.blueAccent),
+            onPressed: _showEditInstrumentDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+            onPressed: () async {
+              bool confirm = await showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      backgroundColor: const Color(0xFF1C1C1E),
+                      title: const Text("Supprimer",
+                          style: TextStyle(color: Colors.white)),
+                      content: Text(
+                          "Voulez-vous retirer ${widget.instrument['name']} ?",
+                          style: const TextStyle(color: Colors.white70)),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text("Annuler")),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text("Supprimer",
+                              style: TextStyle(
+                                  color: Colors.redAccent,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ) ??
+                  false;
+
+              if (confirm) {
+                await Supabase.instance.client
+                    .from('instruments')
+                    .delete()
+                    .eq('id', widget.instrument['id']);
+                if (mounted) Navigator.pop(context);
+              }
+            },
+          )
+        ],
+      ),
+      body: _isLoading
+          ? const Center(
+              child: CircularProgressIndicator(color: Colors.blueAccent))
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                          _currentPrice != null
+                              ? "${_currentPrice!.toStringAsFixed(2)} €"
+                              : "Non coté",
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 30,
+                              fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 6),
+                      if (_spots.length > 1)
+                        Text(
+                            "${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)} % sur la période",
+                            style: TextStyle(
+                                color: perfColor,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 15)),
+                      if ((widget.instrument['category'] ?? '')
+                          .toString()
+                          .isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                              color: Colors.blueAccent.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(10)),
+                          child: Text(widget.instrument['category'],
+                              style: const TextStyle(
+                                  color: Colors.blueAccent,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12)),
+                        ),
+                      ],
+                      if ((widget.instrument['comment'] ?? '')
+                          .toString()
+                          .isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(widget.instrument['comment'],
+                            style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                                fontStyle: FontStyle.italic)),
+                      ],
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(
+                        right: 20, left: 10, bottom: 10),
+                    child: _spots.isEmpty
+                        ? const Center(
+                            child: Text("Pas de données disponibles",
+                                style: TextStyle(color: Colors.white54)))
+                        : LineChart(
+                            LineChartData(
+                              gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  getDrawingHorizontalLine: (v) => FlLine(
+                                      color: Colors.white10, strokeWidth: 1)),
+                              titlesData: FlTitlesData(
+                                show: true,
+                                rightTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false)),
+                                topTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false)),
+                                bottomTitles: AxisTitles(
+                                  sideTitles: SideTitles(
+                                    showTitles: true,
+                                    reservedSize: 30,
+                                    interval: (_spots.length / 5)
+                                                .ceilToDouble() ==
+                                            0
+                                        ? 1
+                                        : (_spots.length / 5).ceilToDouble(),
+                                    getTitlesWidget: (value, meta) {
+                                      int index = value.toInt();
+                                      if (index >= 0 && index < _dates.length) {
+                                        DateTime d =
+                                            DateTime.parse(_dates[index]);
+                                        String day = d.day
+                                            .toString()
+                                            .padLeft(2, '0');
+                                        String month = d.month
+                                            .toString()
+                                            .padLeft(2, '0');
+                                        if (_selectedPeriod == 'ALL' ||
+                                            _selectedPeriod == '1A') {
+                                          return Padding(
+                                              padding: const EdgeInsets.only(
+                                                  top: 8.0),
+                                              child: Text(
+                                                  '$month/${d.year.toString().substring(2)}',
+                                                  style: const TextStyle(
+                                                      color: Colors.white54,
+                                                      fontSize: 11)));
+                                        }
+                                        return Padding(
+                                            padding: const EdgeInsets.only(
+                                                top: 8.0),
+                                            child: Text('$day/$month',
+                                                style: const TextStyle(
+                                                    color: Colors.white54,
+                                                    fontSize: 11)));
+                                      }
+                                      return const Text('');
+                                    },
+                                  ),
+                                ),
+                                leftTitles: AxisTitles(
+                                  sideTitles: SideTitles(
+                                    showTitles: true,
+                                    reservedSize: 55,
+                                    getTitlesWidget: (value, meta) => Text(
+                                        '${value.toStringAsFixed(0)} €',
+                                        style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 11)),
+                                  ),
+                                ),
+                              ),
+                              borderData: FlBorderData(show: false),
+                              lineTouchData: LineTouchData(
+                                touchTooltipData: LineTouchTooltipData(
+                                  getTooltipItems: (touchedSpots) =>
+                                      touchedSpots.map((spot) {
+                                    int index = spot.x.toInt();
+                                    String date = index < _dates.length
+                                        ? _dates[index]
+                                        : "";
+                                    return LineTooltipItem(
+                                        "$date\n${spot.y.toStringAsFixed(2)} €",
+                                        const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold));
+                                  }).toList(),
+                                ),
+                              ),
+                              lineBarsData: [
+                                LineChartBarData(
+                                  spots: _spots,
+                                  isCurved: true,
+                                  color: perfColor,
+                                  barWidth: 2,
+                                  isStrokeCapRound: true,
+                                  dotData: const FlDotData(show: false),
+                                  belowBarData: BarAreaData(
+                                      show: true,
+                                      color: perfColor.withOpacity(0.1)),
+                                ),
+                              ],
+                            ),
+                          ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: _periods.map((period) {
+                      final isSelected = _selectedPeriod == period;
+                      return GestureDetector(
+                        onTap: () {
+                          setState(() => _selectedPeriod = period);
+                          _buildChart();
+                          setState(() {});
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                              color: isSelected
+                                  ? const Color(0xFF333333)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(15)),
+                          child: Text(period,
+                              style: TextStyle(
+                                  color: isSelected
+                                      ? Colors.white
+                                      : Colors.white54,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13)),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+    );
+  }
+}
+
 // ==========================================
 // 4. LA PAGE "PORTFOLIO" (Valeurs & Historique)
 // ==========================================
@@ -971,7 +2343,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   bool _isLoading = true;
   List<Map<String, dynamic>> _instruments = [];
   List<Map<String, dynamic>> _history = [];
-  Map<String, double> _livePrices = {}; 
+  Map<String, double> _livePrices = {};
   Map<String, double> _ownedQuantities = {};
 
   @override
@@ -980,11 +2352,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     _loadPortfolioData();
   }
 
-  // Boîte de dialogue pour modifier une transaction existante
   Future<void> _showEditTransactionDialog(Map<String, dynamic> tx) async {
-    final TextEditingController qtyController = TextEditingController(text: tx['quantity'].toString());
-    final TextEditingController priceController = TextEditingController(text: tx['unit_price'].toString());
-    
+    final TextEditingController qtyController =
+        TextEditingController(text: tx['quantity'].toString());
+    final TextEditingController priceController =
+        TextEditingController(text: tx['unit_price'].toString());
+
     DateTime selectedDate = DateTime.parse(tx['date'].toString().split('T')[0]);
 
     showDialog(
@@ -992,19 +2365,25 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
           backgroundColor: const Color(0xFF1C1C1E),
-          title: Text("Modifier la transaction", style: const TextStyle(color: Colors.white)),
+          title: const Text("Modifier la transaction",
+              style: TextStyle(color: Colors.white)),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("Instrument : ${tx['instruments']?['name'] ?? 'Inconnu'}", style: const TextStyle(color: Colors.white54, fontSize: 13)),
+                Text(
+                    "Instrument : ${tx['instruments']?['name'] ?? 'Inconnu'}",
+                    style: const TextStyle(
+                        color: Colors.white54, fontSize: 13)),
                 const SizedBox(height: 15),
-                // Modification de la date
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: Text("Date : ${selectedDate.toLocal().toString().split(' ')[0]}", style: const TextStyle(color: Colors.white)),
-                  trailing: const Icon(Icons.calendar_today, color: Colors.blueAccent),
+                  title: Text(
+                      "Date : ${selectedDate.toLocal().toString().split(' ')[0]}",
+                      style: const TextStyle(color: Colors.white)),
+                  trailing: const Icon(Icons.calendar_today,
+                      color: Colors.blueAccent),
                   onTap: () async {
                     final DateTime? picked = await showDatePicker(
                       context: context,
@@ -1020,39 +2399,45 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   },
                 ),
                 const SizedBox(height: 10),
-                // Modification de la quantité
                 TextField(
                   controller: qtyController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true),
                   style: const TextStyle(color: Colors.white),
                   decoration: const InputDecoration(
                     labelText: "Quantité",
                     labelStyle: TextStyle(color: Colors.white54),
-                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.blueAccent)),
+                    enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.blueAccent)),
                   ),
                 ),
                 const SizedBox(height: 10),
-                // Modification du prix unitaire
                 TextField(
                   controller: priceController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true),
                   style: const TextStyle(color: Colors.white),
                   decoration: const InputDecoration(
                     labelText: "Prix unitaire (€)",
                     labelStyle: TextStyle(color: Colors.white54),
-                    enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.blueAccent)),
+                    enabledBorder: UnderlineInputBorder(
+                        borderSide: BorderSide(color: Colors.blueAccent)),
                   ),
                 ),
               ],
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Annuler")),
             TextButton(
               onPressed: () async {
-                double? newQty = double.tryParse(qtyController.text.replaceAll(',', '.'));
-                double? newPrice = double.tryParse(priceController.text.replaceAll(',', '.'));
-                
+                double? newQty = double.tryParse(
+                    qtyController.text.replaceAll(',', '.'));
+                double? newPrice = double.tryParse(
+                    priceController.text.replaceAll(',', '.'));
+
                 if (newQty != null && newPrice != null) {
                   await supabase.from('transactions').update({
                     'quantity': newQty,
@@ -1061,10 +2446,11 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   }).eq('id', tx['id']);
 
                   Navigator.pop(context);
-                  _loadPortfolioData(); // Recharge tout pour actualiser les graphiques et totaux
+                  _loadPortfolioData();
                 }
               },
-              child: const Text("Mettre à jour", style: TextStyle(fontWeight: FontWeight.bold)),
+              child: const Text("Mettre à jour",
+                  style: TextStyle(fontWeight: FontWeight.bold)),
             ),
           ],
         ),
@@ -1074,12 +2460,13 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
   Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
     final TextEditingController priceController = TextEditingController();
-    
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1C1C1E),
-        title: Text("Prix manuel : ${inst['name']}", style: const TextStyle(color: Colors.white)),
+        title: Text("Prix manuel : ${inst['name']}",
+            style: const TextStyle(color: Colors.white)),
         content: TextField(
           controller: priceController,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -1087,14 +2474,18 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           decoration: const InputDecoration(
             hintText: "Entrez le prix unitaire",
             hintStyle: TextStyle(color: Colors.white54),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.blueAccent)),
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.blueAccent)),
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Annuler")),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text("Annuler")),
           TextButton(
             onPressed: () async {
-              double? newPrice = double.tryParse(priceController.text.replaceAll(',', '.'));
+              double? newPrice = double.tryParse(
+                  priceController.text.replaceAll(',', '.'));
               if (newPrice != null) {
                 final today = DateTime.now().toIso8601String().split('T')[0];
                 await supabase.from('daily_prices').upsert({
@@ -1106,59 +2497,25 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                 _loadPortfolioData();
               }
             },
-            child: const Text("Enregistrer", style: TextStyle(fontWeight: FontWeight.bold)),
+            child: const Text("Enregistrer",
+                style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
     );
   }
 
-  Future<double?> _fetchLivePrice(String instrumentName, String isin, dynamic instrumentId) async {
-    final today = DateTime.now().toIso8601String().split('T')[0];
-    final manualPrice = await supabase
-        .from('daily_prices')
-        .select('price')
-        .eq('instrument_id', instrumentId)
-        .eq('date', today)
-        .maybeSingle();
-
-    if (manualPrice != null) return (manualPrice['price'] as num).toDouble();
-
-    if (instrumentName.startsWith('EPA:')) {
-      String yahooSymbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
-      final targetUrl = 'https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol';
-      final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-      try {
-        final response = await http.get(proxyUrl);
-        if (response.statusCode == 200) {
-          final data = json.decode(response.body);
-          final price = data['chart']['result'][0]['meta']['regularMarketPrice'];
-          return (price as num).toDouble();
-        }
-      } catch (e) {}
-    } else if (isin.isNotEmpty) {
-      final targetUrl = 'https://markets.ft.com/data/funds/tearsheet/summary?s=$isin:EUR';
-      final proxyUrl = Uri.parse('https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}');
-      try {
-        final response = await http.get(proxyUrl);
-        if (response.statusCode == 200) {
-          var document = parser.parse(response.body);
-          var elements = document.querySelectorAll('.mod-ui-data-list__value');
-          if (elements.isNotEmpty) {
-            String cleanValue = elements[0].text.replaceAll(',', '').replaceAll(' ', '');
-            return double.tryParse(cleanValue);
-          }
-        }
-      } catch (e) {}
-    }
-    return null;
-  }
-
   Future<void> _loadPortfolioData() async {
     setState(() => _isLoading = true);
     try {
-      final historyData = await supabase.from('transactions').select('*, instruments(name, ticker_isin), accounts(name)').order('date', ascending: false);
-      final instrumentsData = await supabase.from('instruments').select('id, name, ticker_isin').order('name');
+      final historyData = await supabase
+          .from('transactions')
+          .select('*, instruments(name, ticker_isin), accounts(name)')
+          .order('date', ascending: false);
+      final instrumentsData = await supabase
+          .from('instruments')
+          .select('id, name, ticker_isin, category, comment')
+          .order('name');
 
       Map<String, double> qtys = {};
       for (var tx in historyData) {
@@ -1167,14 +2524,16 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         double qty = (tx['quantity'] ?? 0).toDouble();
         String type = tx['transaction_type'];
         if (!qtys.containsKey(instName)) qtys[instName] = 0.0;
-        if (type == 'Buy' || type == 'Deposit') qtys[instName] = qtys[instName]! + qty;
-        else if (type == 'Sell') qtys[instName] = qtys[instName]! - qty;
+        if (type == 'Buy' || type == 'Deposit') {
+          qtys[instName] = qtys[instName]! + qty;
+        } else if (type == 'Sell') qtys[instName] = qtys[instName]! - qty;
       }
       _ownedQuantities = qtys;
 
       Map<String, double> prices = {};
       for (var inst in instrumentsData) {
-        double? livePrice = await _fetchLivePrice(inst['name'], inst['ticker_isin'], inst['id']); 
+        double? livePrice = await PriceService.fetchLivePrice(
+            inst['name'], inst['ticker_isin'] ?? '', inst['id']);
         if (livePrice != null) prices[inst['name']] = livePrice;
       }
 
@@ -1198,63 +2557,122 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       child: Scaffold(
         backgroundColor: Colors.black,
         appBar: AppBar(
-          title: const Text('Portfolio'),
+          title: const Text('Portfolio',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           backgroundColor: Colors.black,
           bottom: const TabBar(
             labelColor: Colors.blueAccent,
             unselectedLabelColor: Colors.white54,
             indicatorColor: Colors.blueAccent,
-            tabs: [Tab(text: 'Valeurs (Live)'), Tab(text: 'Historique')],
+            tabs: [Tab(text: 'Valeurs'), Tab(text: 'Historique')],
           ),
         ),
-        body: _isLoading ? const Center(child: CircularProgressIndicator()) : TabBarView(
-          children: [
-            // --- ONGLET 1 : VALEURS ---
-            ListView.builder(
-              itemCount: _instruments.length,
-            itemBuilder: (context, index) {
-                final inst = _instruments[index];
-                final ownedQty = _ownedQuantities[inst['name']] ?? 0.0;
-                if (ownedQty <= 0) return const SizedBox.shrink();
-                
-                final currentPrice = _livePrices[inst['name']];
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : TabBarView(
+                children: [
+                  // --- ONGLET 1 : VALEURS ---
+                  ListView.builder(
+                    itemCount: _instruments.length,
+                    itemBuilder: (context, index) {
+                      final inst = _instruments[index];
+                      final ownedQty = _ownedQuantities[inst['name']] ?? 0.0;
+                      if (ownedQty <= 0) return const SizedBox.shrink();
 
-                return Card(
-                  color: const Color(0xFF1C1C1E),
-                  child: ListTile(
-                    onTap: () => _showManualPriceDialog(inst),
-                    title: Text(inst['name'], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    trailing: Text(
-                      currentPrice != null ? "${currentPrice.toStringAsFixed(2)} €" : "Non coté", 
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                    ),
+                      final currentPrice = _livePrices[inst['name']];
+
+                      return Card(
+                        color: const Color(0xFF1C1C1E),
+                        child: ListTile(
+                          onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (context) =>
+                                      InstrumentDetailScreen(
+                                          instrument: inst))),
+                          title: Text(inst['name'],
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold)),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                currentPrice != null
+                                    ? "${currentPrice.toStringAsFixed(2)} €"
+                                    : "Non coté",
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.edit,
+                                    color: Colors.white38, size: 18),
+                                onPressed: () => _showManualPriceDialog(inst),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
-            // --- ONGLET 2 : HISTORIQUE (AVEC CLIC DE MODIFICATION) ---
-            ListView.builder(
-              padding: const EdgeInsets.all(8),
-              itemCount: _history.length,
-              itemBuilder: (context, index) {
-                final tx = _history[index];
-                return Card(
-                  color: const Color(0xFF1C1C1E),
-                  child: ListTile(
-                    onTap: () => _showEditTransactionDialog(tx), // <-- Déclencheur de modification au clic !
-                    title: Text(tx['instruments']?['name'] ?? 'Inconnu', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                    subtitle: Text("${tx['transaction_type']} • ${tx['date'].toString().split('T')[0]}", style: const TextStyle(color: Colors.white54)),
-                    trailing: Text("${tx['quantity']} x ${tx['unit_price']} €", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  // --- ONGLET 2 : HISTORIQUE (AVEC CLIC DE MODIFICATION) ---
+                  ListView.builder(
+                    padding: const EdgeInsets.all(8),
+                    itemCount: _history.length,
+                    itemBuilder: (context, index) {
+                      final tx = _history[index];
+
+                      // Définition de la couleur selon le type
+                      Color typeColor;
+                      switch (tx['transaction_type']) {
+                        case 'Buy':
+                          typeColor = Colors.greenAccent;
+                          break;
+                        case 'Sell':
+                          typeColor = Colors.redAccent;
+                          break;
+                        case 'Dividend':
+                          typeColor = Colors.blueAccent;
+                          break;
+                        case 'Deposit':
+                          typeColor = Colors.white;
+                          break;
+                        default:
+                          typeColor = Colors.white54;
+                      }
+
+                      return Card(
+                        color: const Color(0xFF1C1C1E),
+                        child: ListTile(
+                          onTap: () => _showEditTransactionDialog(tx),
+                          title: Text(
+                              tx['instruments']?['name'] ?? 'Inconnu',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold)),
+                          subtitle: Text(
+                              "${tx['transaction_type']} • ${tx['date'].toString().split('T')[0]}",
+                              style: TextStyle(
+                                  color: typeColor.withOpacity(0.8))),
+                          trailing: Text(
+                              "${tx['quantity']} x ${tx['unit_price']} €",
+                              style: TextStyle(
+                                  color: typeColor,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15)),
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
-            ),
-          ],
-        ),
+                ],
+              ),
       ),
     );
   }
 }
+
 // ==========================================
 // 5. LA PAGE D'AJOUT DE TRANSACTION
 // ==========================================
@@ -1268,7 +2686,7 @@ class AddTransactionScreen extends StatefulWidget {
 class _AddTransactionScreenState extends State<AddTransactionScreen> {
   final supabase = Supabase.instance.client;
   final _formKey = GlobalKey<FormState>();
-  
+
   DateTime _selectedDate = DateTime.now();
 
   Future<void> _selectDate(BuildContext context) async {
@@ -1286,52 +2704,54 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   }
 
   String _selectedType = 'Buy';
-  final List<String> _types = ['Buy', 'Sell', 'Dividend', 'Deposit', 'Withdrawal'];
+  final List<String> _types = [
+    'Buy',
+    'Sell',
+    'Dividend',
+    'Deposit',
+    'Withdrawal'
+  ];
 
-  // Gestion des listes (Instruments et Comptes)
   List<Map<String, dynamic>> _instrumentsList = [];
   dynamic _selectedInstrumentId;
-  
+
   List<Map<String, dynamic>> _accountsList = [];
   dynamic _selectedAccountId;
-  
+
   bool _isLoadingData = true;
 
-final _quantityController = TextEditingController();
+  final _quantityController = TextEditingController();
   final _priceController = TextEditingController();
-  final _feesController = TextEditingController(); // <-- LA LIGNE À AJOUTER
+  final _feesController = TextEditingController();
   bool _isSubmitting = false;
 
   @override
   void initState() {
     super.initState();
-    _loadData(); // On charge maintenant les instruments ET les comptes
+    _loadData();
   }
 
   Future<void> _loadData() async {
     try {
-      // 1. Charger les instruments
       final instrumentsData = await supabase
           .from('instruments')
           .select('id, name, ticker_isin')
+          .eq('is_watchlist', false)
           .order('name');
 
-      // 2. Charger les comptes
       final accountsData = await supabase
           .from('accounts')
           .select('id, name')
           .order('name');
 
       if (!mounted) return;
-      
+
       setState(() {
-        // Remplir la liste des instruments
         _instrumentsList = List<Map<String, dynamic>>.from(instrumentsData);
         if (_instrumentsList.isNotEmpty) {
           _selectedInstrumentId = _instrumentsList.first['id'];
         }
 
-        // Remplir la liste des comptes
         _accountsList = List<Map<String, dynamic>>.from(accountsData);
         if (_accountsList.isNotEmpty) {
           _selectedAccountId = _accountsList.first['id'];
@@ -1343,7 +2763,9 @@ final _quantityController = TextEditingController();
       if (!mounted) return;
       setState(() => _isLoadingData = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Erreur de chargement: $e"), backgroundColor: Colors.red),
+        SnackBar(
+            content: Text("Erreur de chargement: $e"),
+            backgroundColor: Colors.red),
       );
     }
   }
@@ -1352,13 +2774,17 @@ final _quantityController = TextEditingController();
     if (!_formKey.currentState!.validate()) return;
     if (_selectedInstrumentId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Veuillez sélectionner un instrument'), backgroundColor: Colors.red),
+        const SnackBar(
+            content: Text('Veuillez sélectionner un instrument'),
+            backgroundColor: Colors.red),
       );
       return;
     }
     if (_selectedAccountId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Veuillez sélectionner un compte'), backgroundColor: Colors.red),
+        const SnackBar(
+            content: Text('Veuillez sélectionner un compte'),
+            backgroundColor: Colors.red),
       );
       return;
     }
@@ -1366,12 +2792,11 @@ final _quantityController = TextEditingController();
     setState(() => _isSubmitting = true);
 
     try {
-      // 1. C'est ICI qu'on prépare toutes nos variables (les "final" et les vérifications)
-      // 1. C'est ICI qu'on prépare toutes nos variables (les "final" et les vérifications)
-      final quantity = double.parse(_quantityController.text.replaceAll(',', '.'));
-      final unitPrice = double.parse(_priceController.text.replaceAll(',', '.'));
-      
-      // On prépare les frais (0.0 par défaut si la case est vide)
+      final quantity =
+          double.parse(_quantityController.text.replaceAll(',', '.'));
+      final unitPrice =
+          double.parse(_priceController.text.replaceAll(',', '.'));
+
       double fees = 0.0;
       if (_feesController.text.isNotEmpty) {
         fees = double.parse(_feesController.text.replaceAll(',', '.'));
@@ -1380,25 +2805,28 @@ final _quantityController = TextEditingController();
       await supabase.from('transactions').insert({
         'transaction_type': _selectedType,
         'instrument_id': _selectedInstrumentId,
-        'account_id': _selectedAccountId, 
-        'quantity': quantity,           // <-- On utilise enfin la variable !
-        'unit_price': unitPrice,        // <-- On utilise enfin la variable !
-        'fees': fees,                   // <-- On envoie les frais !
+        'account_id': _selectedAccountId,
+        'quantity': quantity,
+        'unit_price': unitPrice,
+        'fees': fees,
         'date': _selectedDate.toIso8601String(),
       });
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Transaction enregistrée !'), backgroundColor: Colors.green),
+        const SnackBar(
+            content: Text('Transaction enregistrée !'),
+            backgroundColor: Colors.green),
       );
 
       Navigator.pop(context, true);
-      
     } on PostgrestException catch (error) {
       print('🛑 ERREUR SUPABASE : ${error.message}');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur BDD: ${error.message}'), backgroundColor: Colors.red),
+          SnackBar(
+              content: Text('Erreur BDD: ${error.message}'),
+              backgroundColor: Colors.red),
         );
       }
     } catch (e) {
@@ -1415,9 +2843,10 @@ final _quantityController = TextEditingController();
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.black,
       appBar: AppBar(
         title: const Text('Nouvelle Transaction'),
-        backgroundColor: Colors.blueAccent,
+        backgroundColor: Colors.black,
         foregroundColor: Colors.white,
       ),
       body: _isLoadingData
@@ -1428,16 +2857,14 @@ final _quantityController = TextEditingController();
                 key: _formKey,
                 child: ListView(
                   children: [
-                    // --- Date ---
                     ListTile(
                       contentPadding: EdgeInsets.zero,
-                      title: Text("Date : ${_selectedDate.toLocal().toString().split(' ')[0]}"),
+                      title: Text(
+                          "Date : ${_selectedDate.toLocal().toString().split(' ')[0]}"),
                       trailing: const Icon(Icons.calendar_today),
                       onTap: () => _selectDate(context),
                     ),
                     const SizedBox(height: 16),
-                    
-                    // --- Compte ---
                     DropdownButtonFormField<dynamic>(
                       value: _selectedAccountId,
                       decoration: const InputDecoration(
@@ -1450,11 +2877,10 @@ final _quantityController = TextEditingController();
                           child: Text(acc['name']),
                         );
                       }).toList(),
-                      onChanged: (value) => setState(() => _selectedAccountId = value),
+                      onChanged: (value) =>
+                          setState(() => _selectedAccountId = value),
                     ),
                     const SizedBox(height: 16),
-
-                    // --- Type de transaction ---
                     DropdownButtonFormField<String>(
                       value: _selectedType,
                       decoration: const InputDecoration(
@@ -1462,13 +2888,13 @@ final _quantityController = TextEditingController();
                         border: OutlineInputBorder(),
                       ),
                       items: _types.map((type) {
-                        return DropdownMenuItem(value: type, child: Text(type));
+                        return DropdownMenuItem(
+                            value: type, child: Text(type));
                       }).toList(),
-                      onChanged: (value) => setState(() => _selectedType = value!),
+                      onChanged: (value) =>
+                          setState(() => _selectedType = value!),
                     ),
                     const SizedBox(height: 16),
-                    
-                    // --- Instrument ---
                     DropdownButtonFormField<dynamic>(
                       value: _selectedInstrumentId,
                       decoration: const InputDecoration(
@@ -1481,63 +2907,64 @@ final _quantityController = TextEditingController();
                           child: Text("${inst['name']}"),
                         );
                       }).toList(),
-                      onChanged: (value) => setState(() => _selectedInstrumentId = value),
+                      onChanged: (value) =>
+                          setState(() => _selectedInstrumentId = value),
                     ),
                     const SizedBox(height: 16),
-                    
-                    // --- Quantité ---
                     TextFormField(
                       controller: _quantityController,
                       decoration: const InputDecoration(
                         labelText: 'Quantité',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      validator: (val) => (val == null || val.isEmpty) ? 'Champ requis' : null,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      validator: (val) => (val == null || val.isEmpty)
+                          ? 'Champ requis'
+                          : null,
                     ),
                     const SizedBox(height: 16),
-                    
-                   // --- Prix unitaire ---
                     TextFormField(
                       controller: _priceController,
                       decoration: const InputDecoration(
                         labelText: 'Prix unitaire (€)',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      validator: (val) => (val == null || val.isEmpty) ? 'Champ requis' : null,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      validator: (val) => (val == null || val.isEmpty)
+                          ? 'Champ requis'
+                          : null,
                     ),
                     const SizedBox(height: 16),
-
-                    // --- Frais de courtage ---
                     TextFormField(
                       controller: _feesController,
                       decoration: const InputDecoration(
                         labelText: 'Frais de courtage (€)',
                         border: OutlineInputBorder(),
                       ),
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
                     ),
                     const SizedBox(height: 24),
-
-                   
-
-                    // --- Bouton Enregistrer ---
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.white,
-                        foregroundColor: Colors.blueAccent,
+                        backgroundColor: Colors.blueAccent,
+                        foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
                       ),
                       onPressed: _isSubmitting ? null : _submitTransaction,
                       child: _isSubmitting
                           ? const SizedBox(
                               height: 20,
                               width: 20,
-                              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                  color: Colors.white, strokeWidth: 2),
                             )
-                          : const Text('Enregistrer la transaction', style: TextStyle(fontSize: 16)),
+                          : const Text('Enregistrer la transaction',
+                              style: TextStyle(fontSize: 16)),
                     ),
                   ],
                 ),
@@ -1546,7 +2973,6 @@ final _quantityController = TextEditingController();
     );
   }
 }
-
 
 // ==========================================
 // 6. LA PAGE D'AJOUT DE COMPTE
@@ -1575,81 +3001,9 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Compte créé avec succès !'), backgroundColor: Colors.green),
-      );
-      Navigator.pop(context); // Retour à l'écran précédent
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red),
-      );
-    } finally {
-      if (mounted) setState(() => _isSubmitting = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Nouveau Compte'), backgroundColor: Colors.white, foregroundColor: Colors.white),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            children: [
-              TextFormField(
-                controller: _nameController,
-                decoration: const InputDecoration(labelText: 'Nom du compte (ex: PEA, CTO...)', border: OutlineInputBorder()),
-                validator: (val) => (val == null || val.isEmpty) ? 'Champ requis' : null,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white, foregroundColor: Colors.blueAccent,
-                  minimumSize: const Size(double.infinity, 50),
-                ),
-                onPressed: _isSubmitting ? null : _submitAccount,
-                child: _isSubmitting ? const CircularProgressIndicator(color: Colors.white) : const Text('Créer le compte'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ==========================================
-// 7. LA PAGE D'AJOUT D'INSTRUMENT
-// ==========================================
-class AddInstrumentScreen extends StatefulWidget {
-  const AddInstrumentScreen({super.key});
-
-  @override
-  State<AddInstrumentScreen> createState() => _AddInstrumentScreenState();
-}
-
-class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
-  final supabase = Supabase.instance.client;
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _tickerController = TextEditingController();
-  bool _isSubmitting = false;
-
-  Future<void> _submitInstrument() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isSubmitting = true);
-
-    try {
-      await supabase.from('instruments').insert({
-        'name': _nameController.text.trim(),
-        'ticker_isin': _tickerController.text.trim().toUpperCase(), // On force en majuscules
-      });
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Instrument ajouté avec succès !'), backgroundColor: Colors.green),
+        const SnackBar(
+            content: Text('Compte créé avec succès !'),
+            backgroundColor: Colors.green),
       );
       Navigator.pop(context);
     } catch (e) {
@@ -1665,7 +3019,11 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Nouvel Instrument'), backgroundColor: Colors.white, foregroundColor: Colors.blueAccent),
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+          title: const Text('Nouveau Compte'),
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Form(
@@ -1674,23 +3032,150 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
             children: [
               TextFormField(
                 controller: _nameController,
-                decoration: const InputDecoration(labelText: 'Nom (ex: LVMH, S&P 500)', border: OutlineInputBorder()),
-                validator: (val) => (val == null || val.isEmpty) ? 'Champ requis' : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _tickerController,
-                decoration: const InputDecoration(labelText: 'Ticker ou ISIN (ex: MC.PA)', border: OutlineInputBorder()),
-                validator: (val) => (val == null || val.isEmpty) ? 'Champ requis' : null,
+                decoration: const InputDecoration(
+                    labelText: 'Nom du compte (ex: PEA, CTO...)',
+                    border: OutlineInputBorder()),
+                validator: (val) => (val == null || val.isEmpty)
+                    ? 'Champ requis'
+                    : null,
               ),
               const SizedBox(height: 24),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.white, foregroundColor: Colors.blueAccent,
+                  backgroundColor: Colors.blueAccent,
+                  foregroundColor: Colors.white,
+                  minimumSize: const Size(double.infinity, 50),
+                ),
+                onPressed: _isSubmitting ? null : _submitAccount,
+                child: _isSubmitting
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('Créer le compte'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ==========================================
+// 7. LA PAGE D'AJOUT D'INSTRUMENT
+// ==========================================
+class AddInstrumentScreen extends StatefulWidget {
+  final bool isWatchlist;
+  const AddInstrumentScreen({super.key, this.isWatchlist = false});
+
+  @override
+  State<AddInstrumentScreen> createState() => _AddInstrumentScreenState();
+}
+
+class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
+  final supabase = Supabase.instance.client;
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _tickerController = TextEditingController();
+  final _commentController = TextEditingController();
+  String? _selectedCategory;
+  bool _isSubmitting = false;
+
+  Future<void> _submitInstrument() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isSubmitting = true);
+
+    try {
+      await supabase.from('instruments').insert({
+        'name': _nameController.text.trim(),
+        'ticker_isin': _tickerController.text.trim().toUpperCase(),
+        'comment': _commentController.text.trim(),
+        'category': _selectedCategory,
+        'is_watchlist': widget.isWatchlist,
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Instrument ajouté avec succès !'),
+            backgroundColor: Colors.green),
+      );
+      Navigator.pop(context, true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: Text(widget.isWatchlist
+            ? 'Nouvel Instrument (Watchlist)'
+            : 'Nouvel Instrument'),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Form(
+          key: _formKey,
+          child: ListView(
+            children: [
+              TextFormField(
+                controller: _nameController,
+                decoration: const InputDecoration(
+                    labelText: 'Nom (ex: LVMH, S&P 500)',
+                    border: OutlineInputBorder()),
+                validator: (val) => (val == null || val.isEmpty)
+                    ? 'Champ requis'
+                    : null,
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _tickerController,
+                decoration: const InputDecoration(
+                    labelText: 'Ticker ou ISIN (ex: MC.PA)',
+                    border: OutlineInputBorder()),
+                validator: (val) => (val == null || val.isEmpty)
+                    ? 'Champ requis'
+                    : null,
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _selectedCategory,
+                decoration: const InputDecoration(
+                    labelText: 'Catégorie', border: OutlineInputBorder()),
+                items: kCategories
+                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .toList(),
+                onChanged: (value) => setState(() => _selectedCategory = value),
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _commentController,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: 'Commentaire (thèse d\'investissement, notes...)',
+                  border: OutlineInputBorder(),
+                  alignLabelWithHint: true,
+                ),
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent,
+                  foregroundColor: Colors.white,
                   minimumSize: const Size(double.infinity, 50),
                 ),
                 onPressed: _isSubmitting ? null : _submitInstrument,
-                child: _isSubmitting ? const CircularProgressIndicator(color: Colors.white) : const Text('Ajouter l\'instrument'),
+                child: _isSubmitting
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text('Ajouter l\'instrument'),
               ),
             ],
           ),
