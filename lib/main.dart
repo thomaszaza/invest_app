@@ -1,11 +1,8 @@
 import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
-
 import 'dart:convert';
-
 import 'package:http/http.dart' as http;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
@@ -984,7 +981,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        "${_totalPortfolioValue.toStringAsFixed(2)} €",
+                        "${_totalPortfolioValue.toStringAsFixed(2).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ').replaceFirst('.', ',')} €",
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 26,
@@ -1038,7 +1035,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        margin: const EdgeInsets.only(bottom: 10),
+                        margin: const EdgeInsets.only(bottom: 6),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(10),
                           onTap: () => Navigator.push(
@@ -1049,7 +1046,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                             ),
                           ),
                           child: Padding(
-                            padding: const EdgeInsets.all(14.0),
+                            padding: const EdgeInsets.all(8.0),
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
@@ -1081,6 +1078,16 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                           fontSize: 13,
                                         ),
                                       ),
+                                      
+                                    Text(
+                                      pos['currentPrice'] != null
+                                          ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
+                                          : "Non coté",
+                                      style: const TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 13,
+                                      ),
+                                    ),
                                     ],
                                   ),
                                 ),
@@ -1120,16 +1127,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                         ),
                                       ),
                                     ],
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      pos['currentPrice'] != null
-                                          ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
-                                          : "Non coté",
-                                      style: const TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 13,
-                                      ),
-                                    ),
+                                    
                                   ],
                                 ),
                                 IconButton(
@@ -1275,7 +1273,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         backgroundColor: Colors.black,
         actions: [
           IconButton(
-            icon: const Icon(Icons.add),
+            icon: const Icon(Icons.add, color: Colors.white),
             onPressed: () async {
               final result = await Navigator.push(
                 context,
@@ -1816,6 +1814,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
+        backgroundColor: Colors.black,
         title: const Text(
           'Performance',
           style: TextStyle(
@@ -3020,8 +3019,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         appBar: AppBar(
           title: const Text(
             'Portfolio',
+            
             style: TextStyle(
-              color: Colors.white, // Remplace par la couleur de ton choix (ex: Colors.blue, Colors.white, etc.)
+              color: Colors.white, 
               fontSize: 24,
               fontWeight: FontWeight.bold),
           ),
@@ -3035,6 +3035,19 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
               Tab(text: 'Historique'),
             ],
           ),
+
+          actions: [
+           IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Se déconnecter',
+            onPressed: () async {
+        // Déconnexion de Supabase
+              await Supabase.instance.client.auth.signOut();
+        // L'AuthGate dans ton main.dart s'occupera de rediriger 
+        // automatiquement l'utilisateur vers la page de connexion.
+      },
+    ),
+  ],
         ),
         body: _isLoading
             ? const Center(child: CircularProgressIndicator())
@@ -3438,11 +3451,11 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     const SizedBox(height: 24),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blueAccent,
+                        backgroundColor: Color.fromARGB(255, 48, 48, 48),
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
+                          borderRadius: BorderRadius.circular(20),
                         ),
                       ),
                       onPressed: _isSubmitting ? null : _submitTransaction,
@@ -3538,7 +3551,7 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
               const SizedBox(height: 24),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
+                  backgroundColor: Color.fromARGB(255, 48, 48, 48),
                   foregroundColor: Colors.white,
                   minimumSize: const Size(double.infinity, 50),
                 ),
@@ -3669,7 +3682,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
               const SizedBox(height: 24),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blueAccent,
+                  backgroundColor: const Color.fromARGB(255, 48, 48, 48),
                   foregroundColor: Colors.white,
                   minimumSize: const Size(double.infinity, 50),
                 ),
