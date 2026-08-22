@@ -3462,6 +3462,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       contentPadding: EdgeInsets.zero,
                       title: Text(
                         "Date : ${_selectedDate.toLocal().toString().split(' ')[0]}",
+                        style: const TextStyle(color: Colors.white70),
                       ),
                       trailing: const Icon(Icons.calendar_today),
                       onTap: () => _selectDate(context),
@@ -3476,7 +3477,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       items: _accountsList.map((acc) {
                         return DropdownMenuItem(
                           value: acc['id'],
-                          child: Text(acc['name']),
+                          child: Text(acc['name'], style: const TextStyle(color: Colors.white70)),
                         );
                       }).toList(),
                       onChanged: (value) =>
@@ -3490,7 +3491,9 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         border: OutlineInputBorder(),
                       ),
                       items: _types.map((type) {
-                        return DropdownMenuItem(value: type, child: Text(type));
+                        return DropdownMenuItem(
+                          value: type, 
+                          child: Text(type, style: const TextStyle(color: Colors.white70)));
                       }).toList(),
                       onChanged: (value) =>
                           setState(() => _selectedType = value!),
@@ -3505,7 +3508,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       items: _instrumentsList.map((inst) {
                         return DropdownMenuItem(
                           value: inst['id'],
-                          child: Text("${inst['name']}"),
+                          child: Text("${inst['name']}", style: const TextStyle(color: Colors.white70)),
                         );
                       }).toList(),
                       onChanged: (value) =>
@@ -3514,8 +3517,11 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _quantityController,
+                      style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
                         labelText: 'Quantité',
+                        labelStyle: TextStyle(color: Colors.white70),
+                        floatingLabelStyle: TextStyle(color: Colors.white),
                         border: OutlineInputBorder(),
                       ),
                       keyboardType: const TextInputType.numberWithOptions(
@@ -3529,6 +3535,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       controller: _priceController,
                       decoration: const InputDecoration(
                         labelText: 'Prix unitaire (€)',
+                        labelStyle: TextStyle(color: Colors.white70),
+                        floatingLabelStyle: TextStyle(color: Colors.white),
                         border: OutlineInputBorder(),
                       ),
                       keyboardType: const TextInputType.numberWithOptions(
@@ -3542,6 +3550,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       controller: _feesController,
                       decoration: const InputDecoration(
                         labelText: 'Frais de courtage (€)',
+                        labelStyle: TextStyle(color: Colors.white70),
+                        floatingLabelStyle: TextStyle(color: Colors.white),
                         border: OutlineInputBorder(),
                       ),
                       keyboardType: const TextInputType.numberWithOptions(
@@ -3643,6 +3653,8 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
                 controller: _nameController,
                 decoration: const InputDecoration(
                   labelText: 'Nom du compte (ex: PEA, CTO...)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  floatingLabelStyle: TextStyle(color: Colors.white),
                   border: OutlineInputBorder(),
                 ),
                 validator: (val) =>
@@ -3742,6 +3754,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 controller: _nameController,
                 decoration: const InputDecoration(
                   labelText: 'Nom (ex: LVMH, S&P 500)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  floatingLabelStyle: TextStyle(color: Colors.white),
                   border: OutlineInputBorder(),
                 ),
                 validator: (val) =>
@@ -3752,6 +3766,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 controller: _tickerController,
                 decoration: const InputDecoration(
                   labelText: 'Ticker ou ISIN (ex: MC.PA)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  floatingLabelStyle: TextStyle(color: Colors.white),
                   border: OutlineInputBorder(),
                 ),
                 validator: (val) =>
@@ -3762,6 +3778,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 value: _selectedCategory,
                 decoration: const InputDecoration(
                   labelText: 'Catégorie',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  floatingLabelStyle: TextStyle(color: Colors.white),
                   border: OutlineInputBorder(),
                 ),
                 items: kCategories
@@ -3775,6 +3793,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 maxLines: 3,
                 decoration: const InputDecoration(
                   labelText: 'Commentaire (thèse d\'investissement, notes...)',
+                  labelStyle: TextStyle(color: Colors.white70),
+                  floatingLabelStyle: TextStyle(color: Colors.white),
                   border: OutlineInputBorder(),
                   alignLabelWithHint: true,
                 ),
