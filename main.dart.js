@@ -101071,7 +101071,7 @@ ap6(){var s=0,r=A.H(t.H),q=this,p,o,n,m,l
 var $async$AP=A.I(function(a,b){if(a===1)return A.E(b,r)
 for(;;)switch(s){case 0:m={}
 l=m.a=q.a.c.h(0,"category")
-if(l!=null&&!B.b.p(B.m5,l))m.a=null
+if(l!=null&&!B.b.p(B.m4,l))m.a=null
 p=q.a.c.h(0,"comment")
 if(p==null)p=""
 o=$.aa()
@@ -101121,7 +101121,7 @@ $1(a){return new A.mC(new A.awO(this.a,this.b,this.c),null)},
 $S:134}
 A.awO.prototype={
 $2(a,b){var s,r,q=null,p=this.b,o=A.aD("Modifier : "+A.k(p.a.c.h(0,"name")),q,q,q,q,B.aS,q,q,q),n=this.a,m=n.a,l=t.fo
-l=A.Y(new A.Z(B.m5,new A.awK(),l),l.i("af.E"))
+l=A.Y(new A.Z(B.m4,new A.awK(),l),l.i("af.E"))
 s=this.c
 r=t.p
 m=A.d8(A.b([A.Of(B.KL,B.Gn,l,new A.awL(n,b),B.aS,m,t.N),B.b5,A.oS(q,B.bs,!1,q,!0,B.v,q,A.um(),s,q,q,q,q,q,2,B.KB,B.S,!0,q,!0,q,!1,q,B.bE,q,q,q,q,q,q,q,q,3,q,q,!1,"\u2022",q,q,q,q,q,!1,q,q,!1,q,!0,q,B.bY,q,q,q,q,q,q,q,q,q,q,q,B.aS,!0,B.ad,q,B.cL,q,q,q,q)],r),B.L,B.J,B.aL)
@@ -101757,7 +101757,7 @@ case 6:case 1:return A.F(q,r)
 case 2:return A.E(o.at(-1),r)}})
 return A.G($async$B0,r)},
 I(a){var s,r,q,p=this,o=null,n=A.ns(o,B.l,o,o,B.j,o,A.aD(p.a.c?"Nouvel Instrument (Watchlist)":"Nouvel Instrument",o,o,o,o,o,o,o,o)),m=A.tj(!1,p.f,B.KH,o,o,1,o,o,new A.ari()),l=A.tj(!1,p.r,B.Kx,o,o,1,o,o,new A.arj()),k=p.x,j=t.fo
-j=A.Y(new A.Z(B.m5,new A.ark(),j),j.i("af.E"))
+j=A.Y(new A.Z(B.m4,new A.ark(),j),j.i("af.E"))
 k=A.Of(B.KM,o,j,new A.arl(p),o,k,t.N)
 j=A.tj(!1,p.w,B.KC,o,o,3,o,o,o)
 s=A.a9w(o,o,B.i2,o,o,o,o,o,o,B.j,o,B.BM,o,o,o,o,o,o,o,o)
@@ -105777,6 +105777,7 @@ B.Mp=s(["Noto Color Emoji","Noto Sans Symbols","Noto Sans SC","Noto Sans TC","No
 B.Mq=s([1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298],t.t)
 B.Dc=new A.hR("",6,"userDeleted")
 B.qA=s([B.e1,B.fd,B.dg,B.e2,B.fe,B.nU,B.Dc,B.nT],A.ap("D<hR>"))
+B.m4=s(["Croissance","Rendement","Opportunit\xe9"],t.s)
 B.b_=new A.f5(0,"icon")
 B.bf=new A.f5(1,"input")
 B.ae=new A.f5(2,"label")
@@ -105808,7 +105809,6 @@ B.MG=s([B.E5],t.F)
 B.BZ=new A.FE(0,"left")
 B.C_=new A.FE(1,"right")
 B.MI=s([B.BZ,B.C_],A.ap("D<FE>"))
-B.m5=s(["Croissance","Dividende","Opportunit\xe9"],t.s)
 B.a8=new A.FW(0,"upstream")
 B.MK=s([B.a8,B.k],A.ap("D<FW>"))
 B.am=new A.ti(0,"rtl")
@@ -106591,13 +106591,13 @@ B.PD=new A.cg(["*",B.LU,"+",B.Nm,"-",B.Mr,".",B.MS,"/",B.Li,"0",B.Nz,"1",B.Nw,"2
 B.Qf={KeyA:0,KeyB:1,KeyC:2,KeyD:3,KeyE:4,KeyF:5,KeyG:6,KeyH:7,KeyI:8,KeyJ:9,KeyK:10,KeyL:11,KeyM:12,KeyN:13,KeyO:14,KeyP:15,KeyQ:16,KeyR:17,KeyS:18,KeyT:19,KeyU:20,KeyV:21,KeyW:22,KeyX:23,KeyY:24,KeyZ:25,Digit1:26,Digit2:27,Digit3:28,Digit4:29,Digit5:30,Digit6:31,Digit7:32,Digit8:33,Digit9:34,Digit0:35,Minus:36,Equal:37,BracketLeft:38,BracketRight:39,Backslash:40,Semicolon:41,Quote:42,Backquote:43,Comma:44,Period:45,Slash:46}
 B.wO=new A.bV(B.Qf,["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z","1","2","3","4","5","6","7","8","9","0","-","=","[","]","\\",";","'","`",",",".","/"],t.li)
 B.Qe={"zh-Hant":0,"zh-TW":1,"zh-MO":2,"zh-HK":3,ja:4,ko:5,zh:6,"zh-Hans":7,"zh-CN":8}
-B.m4=s(["Noto Sans TC"],t.s)
+B.m5=s(["Noto Sans TC"],t.s)
 B.MV=s(["Noto Sans HK","Noto Sans TC"],t.s)
 B.LX=s(["Noto Sans JP"],t.s)
 B.Lo=s(["Noto Sans KR"],t.s)
 B.qF=s(["Noto Sans SC"],t.s)
 B.NJ=s(["Noto Sans SC","Noto Sans TC"],t.s)
-B.j2=new A.bV(B.Qe,[B.m4,B.m4,B.m4,B.MV,B.LX,B.Lo,B.qF,B.qF,B.NJ],t.VJ)
+B.j2=new A.bV(B.Qe,[B.m5,B.m5,B.m5,B.MV,B.LX,B.Lo,B.qF,B.qF,B.NJ],t.VJ)
 B.PJ=new A.cg([B.hu,-7,B.eZ,1,B.jJ,7,B.dR,-1],A.ap("cg<mL,m>"))
 B.Qb={Abort:0,Again:1,AltLeft:2,AltRight:3,ArrowDown:4,ArrowLeft:5,ArrowRight:6,ArrowUp:7,AudioVolumeDown:8,AudioVolumeMute:9,AudioVolumeUp:10,Backquote:11,Backslash:12,Backspace:13,BracketLeft:14,BracketRight:15,BrightnessDown:16,BrightnessUp:17,BrowserBack:18,BrowserFavorites:19,BrowserForward:20,BrowserHome:21,BrowserRefresh:22,BrowserSearch:23,BrowserStop:24,CapsLock:25,Comma:26,ContextMenu:27,ControlLeft:28,ControlRight:29,Convert:30,Copy:31,Cut:32,Delete:33,Digit0:34,Digit1:35,Digit2:36,Digit3:37,Digit4:38,Digit5:39,Digit6:40,Digit7:41,Digit8:42,Digit9:43,DisplayToggleIntExt:44,Eject:45,End:46,Enter:47,Equal:48,Escape:49,Esc:50,F1:51,F10:52,F11:53,F12:54,F13:55,F14:56,F15:57,F16:58,F17:59,F18:60,F19:61,F2:62,F20:63,F21:64,F22:65,F23:66,F24:67,F3:68,F4:69,F5:70,F6:71,F7:72,F8:73,F9:74,Find:75,Fn:76,FnLock:77,GameButton1:78,GameButton10:79,GameButton11:80,GameButton12:81,GameButton13:82,GameButton14:83,GameButton15:84,GameButton16:85,GameButton2:86,GameButton3:87,GameButton4:88,GameButton5:89,GameButton6:90,GameButton7:91,GameButton8:92,GameButton9:93,GameButtonA:94,GameButtonB:95,GameButtonC:96,GameButtonLeft1:97,GameButtonLeft2:98,GameButtonMode:99,GameButtonRight1:100,GameButtonRight2:101,GameButtonSelect:102,GameButtonStart:103,GameButtonThumbLeft:104,GameButtonThumbRight:105,GameButtonX:106,GameButtonY:107,GameButtonZ:108,Help:109,Home:110,Hyper:111,Insert:112,IntlBackslash:113,IntlRo:114,IntlYen:115,KanaMode:116,KeyA:117,KeyB:118,KeyC:119,KeyD:120,KeyE:121,KeyF:122,KeyG:123,KeyH:124,KeyI:125,KeyJ:126,KeyK:127,KeyL:128,KeyM:129,KeyN:130,KeyO:131,KeyP:132,KeyQ:133,KeyR:134,KeyS:135,KeyT:136,KeyU:137,KeyV:138,KeyW:139,KeyX:140,KeyY:141,KeyZ:142,KeyboardLayoutSelect:143,Lang1:144,Lang2:145,Lang3:146,Lang4:147,Lang5:148,LaunchApp1:149,LaunchApp2:150,LaunchAssistant:151,LaunchControlPanel:152,LaunchMail:153,LaunchScreenSaver:154,MailForward:155,MailReply:156,MailSend:157,MediaFastForward:158,MediaPause:159,MediaPlay:160,MediaPlayPause:161,MediaRecord:162,MediaRewind:163,MediaSelect:164,MediaStop:165,MediaTrackNext:166,MediaTrackPrevious:167,MetaLeft:168,MetaRight:169,MicrophoneMuteToggle:170,Minus:171,NonConvert:172,NumLock:173,Numpad0:174,Numpad1:175,Numpad2:176,Numpad3:177,Numpad4:178,Numpad5:179,Numpad6:180,Numpad7:181,Numpad8:182,Numpad9:183,NumpadAdd:184,NumpadBackspace:185,NumpadClear:186,NumpadClearEntry:187,NumpadComma:188,NumpadDecimal:189,NumpadDivide:190,NumpadEnter:191,NumpadEqual:192,NumpadMemoryAdd:193,NumpadMemoryClear:194,NumpadMemoryRecall:195,NumpadMemoryStore:196,NumpadMemorySubtract:197,NumpadMultiply:198,NumpadParenLeft:199,NumpadParenRight:200,NumpadSubtract:201,Open:202,PageDown:203,PageUp:204,Paste:205,Pause:206,Period:207,Power:208,PrintScreen:209,PrivacyScreenToggle:210,Props:211,Quote:212,Resume:213,ScrollLock:214,Select:215,SelectTask:216,Semicolon:217,ShiftLeft:218,ShiftRight:219,ShowAllWindows:220,Slash:221,Sleep:222,Space:223,Super:224,Suspend:225,Tab:226,Turbo:227,Undo:228,WakeUp:229,ZoomToggle:230}
 B.zP=new A.r(458907)
