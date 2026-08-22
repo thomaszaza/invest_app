@@ -1419,6 +1419,11 @@ class PerformanceScreen extends StatefulWidget {
   State<PerformanceScreen> createState() => _PerformanceScreenState();
 }
 
+// NOTE: garde tes imports existants (fl_chart, supabase_flutter, ton PriceService, etc.)
+// Ce fichier reprend TA classe _PerformanceScreenState avec _calculateChart() corrigé.
+// Le reste (initState, _loadAllData, build) est inchangé, tu peux remplacer
+// directement la méthode _calculateChart dans ton fichier existant si tu préfères.
+
 class _PerformanceScreenState extends State<PerformanceScreen> {
   List<Map<String, dynamic>> _benchmarkList = [];
   String? _selectedBenchmarkId;
@@ -1559,6 +1564,31 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // MÉTHODE CORRIGÉE
+  // ---------------------------------------------------------------------
+  //
+  // Bug #1 (créneaux) : l'ancien code ne regardait que 7 jours en arrière
+  // pour trouver un prix Yahoo. Dès qu'un titre avait un trou de données
+  // (jour férié, valeur peu liquide...) de plus de 7 jours, le prix
+  // retombait brutalement sur le PRU, créant un "créneau" (chute puis
+  // rebond) sur la courbe.
+  //
+  // Bug #2 (benchmark qui ne colle pas) : le prix de référence du
+  // benchmark (base 100%) était calé, en cas de données manquantes le
+  // premier jour, sur une valeur de repli arbitraire (1.0), ce qui
+  // faussait tout le calcul en pourcentage et empêchait la courbe du
+  // benchmark de se superposer à celle du portefeuille.
+  //
+  // Correctif : on trie une bonne fois l'historique de chaque titre et
+  // on avance un pointeur jour après jour ("forward fill") : le prix
+  // utilisé est toujours le DERNIER prix réellement connu, sans jamais
+  // revenir en arrière sur le PRU une fois qu'une cotation a été
+  // trouvée. Le PRU ne sert de repli qu'AVANT la toute première
+  // cotation disponible. Même logique appliquée au benchmark, avec un
+  // garde-fou : si le benchmark n'a aucune donnée de prix exploitable,
+  // on n'affiche plus de fausse ligne plate à 0%.
+  // ---------------------------------------------------------------------
   void _calculateChart() {
     if (_allTransactions.isEmpty) return;
 
@@ -1604,6 +1634,18 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
     }
 
+    // ---- Historique de prix trié + pointeurs pour le forward-fill ----
+    Map<String, List<MapEntry<DateTime, double>>> sortedHistories = {};
+    _yahooHistories.forEach((name, hist) {
+      final entries = hist.entries
+          .map((e) => MapEntry(DateTime.parse(e.key), e.value))
+          .toList()
+        ..sort((a, b) => a.key.compareTo(b.key));
+      sortedHistories[name] = entries;
+    });
+    Map<String, int> historyPointer = {};
+    Map<String, double> lastKnownPrice = {};
+
     List<FlSpot> spotsValue = [];
     List<FlSpot> spotsPercent = [];
     List<FlSpot> spotsBenchmark = [];
@@ -1612,7 +1654,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     double lastValue = 0.0;
     int dayIndex = 0;
-    double benchStartPrice = 0.0;
+
+    // ---- Mise en place du benchmark ----
     String? benchName;
     if (_selectedBenchmarkId != 'NONE' && _selectedBenchmarkId != null) {
       try {
@@ -1621,6 +1664,23 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         )['name'];
       } catch (e) {}
     }
+
+    List<MapEntry<DateTime, double>>? benchSortedHist =
+        benchName != null ? sortedHistories[benchName] : null;
+    Map<String, dynamic>? benchAferInfo =
+        benchName != null ? _aferData[benchName] : null;
+
+    // Aucune donnée exploitable pour ce benchmark -> on désactive plutôt
+    // que d'afficher une ligne plate trompeuse.
+    if (benchName != null &&
+        (benchSortedHist == null || benchSortedHist.isEmpty) &&
+        benchAferInfo == null) {
+      benchName = null;
+    }
+
+    int benchHistoryPointer = 0;
+    double? benchLastKnownPrice;
+    double? benchStartPrice;
 
     for (
       DateTime d = startDate;
@@ -1653,7 +1713,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           instStats[instName]!['invested'] =
               instStats[instName]!['invested']! + (q * p);
         } else if (type == 'Sell') {
-          // CORRECTION: Diminuer le total investi proportionnellement (correction PRU)
           double currentPru = instStats[instName]!['boughtQty']! > 0.001
               ? instStats[instName]!['invested']! /
                     instStats[instName]!['boughtQty']!
@@ -1686,21 +1745,20 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             : 0.0;
         dailyInvestedCapital += (pru * qty);
 
-        // CORRECTION: Le prix par défaut est le PRU (pas 0.0) pour éviter les trous noirs si Yahoo manque un jour
+        // Prix par défaut = PRU, seulement tant qu'aucune cotation réelle
+        // n'a encore été rencontrée.
         double price = pru;
 
-        if (_yahooHistories.containsKey(instName)) {
-          var hist = _yahooHistories[instName]!;
-          for (int i = 0; i < 7; i++) {
-            String lookbackDate = d
-                .subtract(Duration(days: i))
-                .toIso8601String()
-                .split('T')[0];
-            if (hist.containsKey(lookbackDate)) {
-              price = hist[lookbackDate]!;
-              break;
-            }
+        if (sortedHistories.containsKey(instName)) {
+          final hist = sortedHistories[instName]!;
+          int ptr = historyPointer[instName] ?? 0;
+          while (ptr < hist.length && !hist[ptr].key.isAfter(d)) {
+            lastKnownPrice[instName] = hist[ptr].value;
+            ptr++;
           }
+          historyPointer[instName] = ptr;
+          // Forward-fill : on garde le dernier prix RÉELLEMENT connu.
+          price = lastKnownPrice[instName] ?? pru;
         } else {
           var aferInfo = _aferData[instName];
           if (aferInfo != null) {
@@ -1725,53 +1783,44 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       });
 
       investedSeries.add(dailyInvestedCapital);
-      double dailyPct = dailyInvestedCapital > 0.001
-          ? ((dailyPortfolioValue - dailyInvestedCapital) /
-                    dailyInvestedCapital) *
-                100
-          : 0.0;
-
       spotsValue.add(FlSpot(dayIndex.toDouble(), dailyPortfolioValue));
-      spotsPercent.add(FlSpot(dayIndex.toDouble(), dailyPct));
 
       if (benchName != null) {
-        double benchPrice = benchStartPrice > 0 ? benchStartPrice : 1.0;
-        if (_yahooHistories.containsKey(benchName)) {
-          var hist = _yahooHistories[benchName]!;
-          for (int i = 0; i < 7; i++) {
-            String lookbackDate = d
-                .subtract(Duration(days: i))
-                .toIso8601String()
-                .split('T')[0];
-            if (hist.containsKey(lookbackDate)) {
-              benchPrice = hist[lookbackDate]!;
-              break;
-            }
+        double benchPrice;
+
+        if (benchSortedHist != null && benchSortedHist.isNotEmpty) {
+          while (benchHistoryPointer < benchSortedHist.length &&
+              !benchSortedHist[benchHistoryPointer].key.isAfter(d)) {
+            benchLastKnownPrice = benchSortedHist[benchHistoryPointer].value;
+            benchHistoryPointer++;
           }
+          // Avant la première cotation connue, on utilise la première
+          // valeur disponible pour ne pas fausser le point de départ.
+          benchPrice = benchLastKnownPrice ?? benchSortedHist.first.value;
         } else {
-          var aferInfo = _aferData[benchName];
-          if (aferInfo != null) {
-            double globalPru = aferInfo['pru'];
-            double latestPrice = aferInfo['latestPrice'];
-            DateTime firstDate = aferInfo['firstDate'];
-            if (d.isBefore(firstDate) ||
-                endDate.difference(firstDate).inDays <= 0) {
-              benchPrice = globalPru;
-            } else {
-              benchPrice =
-                  globalPru +
-                  ((latestPrice - globalPru) *
-                      (d.difference(firstDate).inDays /
-                          endDate.difference(firstDate).inDays));
-            }
+          // Cas AFER : interpolation linéaire PRU global -> dernier prix connu.
+          double globalPru = benchAferInfo!['pru'];
+          double latestPrice = benchAferInfo['latestPrice'];
+          DateTime firstDate = benchAferInfo['firstDate'];
+
+          if (d.isBefore(firstDate) ||
+              endDate.difference(firstDate).inDays <= 0) {
+            benchPrice = globalPru;
+          } else {
+            int totalDays = endDate.difference(firstDate).inDays;
+            int daysSinceFirst = d.difference(firstDate).inDays;
+            benchPrice =
+                globalPru +
+                ((latestPrice - globalPru) * (daysSinceFirst / totalDays));
           }
         }
 
-        if (dayIndex == 0 || benchStartPrice == 0.0) {
-          benchStartPrice = benchPrice;
-        }
-        double benchPct = benchStartPrice > 0.001
-            ? ((benchPrice - benchStartPrice) / benchStartPrice) * 100
+        // Référence 100% fixée une seule fois, sur le 1er jour affiché,
+        // avec un vrai prix (plus de valeur de repli arbitraire).
+        benchStartPrice ??= benchPrice;
+
+        double benchPct = benchStartPrice! > 0.001
+            ? ((benchPrice - benchStartPrice!) / benchStartPrice!) * 100
             : 0.0;
         spotsBenchmark.add(FlSpot(dayIndex.toDouble(), benchPct));
       }
@@ -1793,6 +1842,27 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     double periodPct = startValue > 0.001
         ? (periodAbs / startValue) * 100
         : (endInvested > 0 ? (periodAbs / endInvested) * 100 : 0.0);
+
+    // ---- Courbe "Profit (%)" rebasée sur le début de la plage ----
+    // On veut que le % de profit parte de 0 au premier jour de la période
+    // choisie (1S, 1M, 3M...), et pas depuis le tout début du portefeuille.
+    // On utilise la même logique que le calcul d'en-tête ci-dessus
+    // (valeur - capital net investi depuis le début de la plage), mais
+    // appliquée jour par jour.
+    if (spotsValue.isNotEmpty) {
+      double refValue = spotsValue.first.y;
+      double refInvested = investedSeries.first;
+      for (int i = 0; i < spotsValue.length; i++) {
+        double val = spotsValue[i].y;
+        double invested = investedSeries[i];
+        double dayNetDeposits = invested - refInvested;
+        double dayAbs = (val - refValue) - dayNetDeposits;
+        double dayPct = refValue > 0.001
+            ? (dayAbs / refValue) * 100
+            : (refInvested > 0.001 ? (dayAbs / refInvested) * 100 : 0.0);
+        spotsPercent.add(FlSpot(i.toDouble(), dayPct));
+      }
+    }
 
     setState(() {
       _totalDividends = divs;
@@ -1818,7 +1888,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         title: const Text(
           'Performance',
           style: TextStyle(
-            color: Colors.white, // Remplace par la couleur de ton choix (ex: Colors.blue, Colors.white, etc.)
+            color: Colors.white,
             fontSize: 24,
             fontWeight: FontWeight.bold),
         ),
@@ -2244,7 +2314,7 @@ class InstrumentDetailScreen extends StatefulWidget {
 
 class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   bool _isLoading = true;
-  String _selectedPeriod = '1M';
+  String _selectedPeriod = 'YTD';
   final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
   List<FlSpot> _spots = [];
   List<String> _dates = [];
