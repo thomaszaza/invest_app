@@ -3533,6 +3533,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _priceController,
+                      style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
                         labelText: 'Prix unitaire (€)',
                         labelStyle: TextStyle(color: Colors.white70),
@@ -3548,6 +3549,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _feesController,
+                      style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
                         labelText: 'Frais de courtage (€)',
                         labelStyle: TextStyle(color: Colors.white70),
@@ -3752,6 +3754,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
             children: [
               TextFormField(
                 controller: _nameController,
+                style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   labelText: 'Nom (ex: LVMH, S&P 500)',
                   labelStyle: TextStyle(color: Colors.white70),
@@ -3764,6 +3767,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _tickerController,
+                style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   labelText: 'Ticker ou ISIN (ex: MC.PA)',
                   labelStyle: TextStyle(color: Colors.white70),
@@ -3790,6 +3794,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _commentController,
+                style: const TextStyle(color: Colors.white),
                 maxLines: 3,
                 decoration: const InputDecoration(
                   labelText: 'Commentaire (thèse d\'investissement, notes...)',
