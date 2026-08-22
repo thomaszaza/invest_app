@@ -1,14 +1,17 @@
 import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
+
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 const String supabaseUrl = 'https://pfzsgikdqpnbyhaokdwn.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_owIZox6AqByWrqOiE_bbhQ_opZNPqaG';
-const List<String> kCategories = ['Croissance', 'Dividende', 'Opportunité'];
+const List<String> kCategories = ['Croissance', 'Rendement', 'Opportunité'];
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -101,7 +104,9 @@ class _LoginScreenState extends State<LoginScreen> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Compte créé ! Vérifie tes emails si besoin ou connecte-toi.'),
+              content: Text(
+                'Compte créé ! Vérifie tes emails si besoin ou connecte-toi.',
+              ),
             ),
           );
         }
@@ -131,7 +136,10 @@ class _LoginScreenState extends State<LoginScreen> {
         elevation: 0,
         title: Text(
           _isSignUp ? 'Créer un compte' : 'Connexion',
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
         ),
         iconTheme: const IconThemeData(color: Colors.white),
       ),
@@ -163,7 +171,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _isSignUp ? 'Inscris-toi pour suivre ton portefeuille' : 'Bon retour ! Connecte-toi à ton espace',
+                    _isSignUp
+                        ? 'Inscris-toi pour suivre ton portefeuille'
+                        : 'Bon retour ! Connecte-toi à ton espace',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey[400], fontSize: 14),
                   ),
@@ -185,9 +195,15 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Colors.greenAccent, width: 1.5),
+                        borderSide: const BorderSide(
+                          color: Colors.greenAccent,
+                          width: 1.5,
+                        ),
                       ),
-                      prefixIcon: const Icon(Icons.email_outlined, color: Colors.grey),
+                      prefixIcon: const Icon(
+                        Icons.email_outlined,
+                        color: Colors.grey,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -208,9 +224,15 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
-                        borderSide: const BorderSide(color: Colors.greenAccent, width: 1.5),
+                        borderSide: const BorderSide(
+                          color: Colors.greenAccent,
+                          width: 1.5,
+                        ),
                       ),
-                      prefixIcon: const Icon(Icons.lock_outline, color: Colors.grey),
+                      prefixIcon: const Icon(
+                        Icons.lock_outline,
+                        color: Colors.grey,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 28),
@@ -232,11 +254,17 @@ class _LoginScreenState extends State<LoginScreen> {
                           ? const SizedBox(
                               width: 24,
                               height: 24,
-                              child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2),
+                              child: CircularProgressIndicator(
+                                color: Colors.black,
+                                strokeWidth: 2,
+                              ),
                             )
                           : Text(
                               _isSignUp ? "Créer mon compte" : 'Se connecter',
-                              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                     ),
                   ),
@@ -286,9 +314,7 @@ class NotificationService {
             AndroidFlutterLocalNotificationsPlugin
           >()
           ?.requestNotificationsPermission();
-    } catch (e) {
-      
-    }
+    } catch (e) {}
   }
 
   static Future<void> showAlert(int id, String title, String body) async {
@@ -675,12 +701,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: _screens[_currentIndex],
-      bottomNavigationBar: 
-      BottomNavigationBar(
+      bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,
         currentIndex: _currentIndex,
         backgroundColor: const Color.fromARGB(255, 26, 26, 26),
-        unselectedItemColor: const Color.fromARGB(255, 141, 139, 139), 
+        unselectedItemColor: const Color.fromARGB(255, 141, 139, 139),
         onTap: (index) {
           setState(() {
             _currentIndex = index;
@@ -951,8 +976,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
           style: TextStyle(
             fontWeight: FontWeight.bold,
             color: Colors.white,
-            fontSize: 24),
-            
+            fontSize: 24,
+          ),
         ),
         backgroundColor: Colors.black,
         actions: [
@@ -1078,16 +1103,16 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                           fontSize: 13,
                                         ),
                                       ),
-                                      
-                                    Text(
-                                      pos['currentPrice'] != null
-                                          ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
-                                          : "Non coté",
-                                      style: const TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 13,
+
+                                      Text(
+                                        pos['currentPrice'] != null
+                                            ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
+                                            : "Non coté",
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13,
+                                        ),
                                       ),
-                                    ),
                                     ],
                                   ),
                                 ),
@@ -1127,7 +1152,6 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                         ),
                                       ),
                                     ],
-                                    
                                   ],
                                 ),
                                 IconButton(
@@ -1268,7 +1292,8 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           style: TextStyle(
             color: Colors.white, // Remplace par la couleur de ton choix (ex: Colors.blue, Colors.white, etc.)
             fontSize: 24,
-            fontWeight: FontWeight.bold),
+            fontWeight: FontWeight.bold,
+          ),
         ),
         backgroundColor: Colors.black,
         actions: [
@@ -1637,10 +1662,11 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     // ---- Historique de prix trié + pointeurs pour le forward-fill ----
     Map<String, List<MapEntry<DateTime, double>>> sortedHistories = {};
     _yahooHistories.forEach((name, hist) {
-      final entries = hist.entries
-          .map((e) => MapEntry(DateTime.parse(e.key), e.value))
-          .toList()
-        ..sort((a, b) => a.key.compareTo(b.key));
+      final entries =
+          hist.entries
+              .map((e) => MapEntry(DateTime.parse(e.key), e.value))
+              .toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
       sortedHistories[name] = entries;
     });
     Map<String, int> historyPointer = {};
@@ -1665,10 +1691,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       } catch (e) {}
     }
 
-    List<MapEntry<DateTime, double>>? benchSortedHist =
-        benchName != null ? sortedHistories[benchName] : null;
-    Map<String, dynamic>? benchAferInfo =
-        benchName != null ? _aferData[benchName] : null;
+    List<MapEntry<DateTime, double>>? benchSortedHist = benchName != null
+        ? sortedHistories[benchName]
+        : null;
+    Map<String, dynamic>? benchAferInfo = benchName != null
+        ? _aferData[benchName]
+        : null;
 
     // Aucune donnée exploitable pour ce benchmark -> on désactive plutôt
     // que d'afficher une ligne plate trompeuse.
@@ -1890,7 +1918,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           style: TextStyle(
             color: Colors.white,
             fontSize: 24,
-            fontWeight: FontWeight.bold),
+            fontWeight: FontWeight.bold,
+          ),
         ),
       ),
       body: _isLoading
@@ -3089,11 +3118,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         appBar: AppBar(
           title: const Text(
             'Portfolio',
-            
+
             style: TextStyle(
-              color: Colors.white, 
+              color: Colors.white,
               fontSize: 24,
-              fontWeight: FontWeight.bold),
+              fontWeight: FontWeight.bold,
+            ),
           ),
           backgroundColor: Colors.black,
           bottom: const TabBar(
@@ -3107,17 +3137,17 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           ),
 
           actions: [
-           IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Se déconnecter',
-            onPressed: () async {
-        // Déconnexion de Supabase
-              await Supabase.instance.client.auth.signOut();
-        // L'AuthGate dans ton main.dart s'occupera de rediriger 
-        // automatiquement l'utilisateur vers la page de connexion.
-      },
-    ),
-  ],
+            IconButton(
+              icon: const Icon(Icons.logout),
+              tooltip: 'Se déconnecter',
+              onPressed: () async {
+                // Déconnexion de Supabase
+                await Supabase.instance.client.auth.signOut();
+                // L'AuthGate dans ton main.dart s'occupera de rediriger
+                // automatiquement l'utilisateur vers la page de connexion.
+              },
+            ),
+          ],
         ),
         body: _isLoading
             ? const Center(child: CircularProgressIndicator())
