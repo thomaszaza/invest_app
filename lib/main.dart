@@ -32,7 +32,7 @@ class MyApp extends StatelessWidget {
       title: 'Zaza Invest',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.white),
         useMaterial3: true,
       ),
       // L'aiguilleur central : vérifie si l'utilisateur est connecté
@@ -604,7 +604,7 @@ void showCreateAlertDialog(
                 labelText: "Seuil de prix (€)",
                 labelStyle: TextStyle(color: Colors.white54),
                 enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.blueAccent),
+                  borderSide: BorderSide(color: Colors.white),
                 ),
               ),
             ),
@@ -871,85 +871,6 @@ class _PositionsScreenState extends State<PositionsScreen> {
     }
   }
 
-  void _showAddMenu(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1C1C1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (BuildContext context) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Color.fromARGB(255, 116, 114, 114),
-                    child: Icon(Icons.swap_horiz, color: Colors.white),
-                  ),
-                  title: const Text(
-                    'Transaction',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  onTap: () async {
-                    Navigator.pop(context);
-                    final result = await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const AddTransactionScreen(),
-                      ),
-                    );
-                    if (result == true) _loadPositions();
-                  },
-                ),
-                ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Color.fromARGB(255, 116, 114, 114),
-                    child: Icon(Icons.business_center, color: Colors.white),
-                  ),
-                  title: const Text(
-                    'Instrument',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  onTap: () async {
-                    Navigator.pop(context);
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const AddInstrumentScreen(),
-                      ),
-                    );
-                  },
-                ),
-                ListTile(
-                  leading: const CircleAvatar(
-                    backgroundColor: Color.fromARGB(255, 116, 114, 114),
-                    child: Icon(Icons.account_balance, color: Colors.white),
-                  ),
-                  title: const Text(
-                    'Compte',
-                    style: TextStyle(color: Colors.white),
-                  ),
-                  onTap: () {
-                    Navigator.pop(context);
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const AddAccountScreen(),
-                      ),
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -983,7 +904,14 @@ class _PositionsScreenState extends State<PositionsScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.add, color: Colors.white),
-            onPressed: () => _showAddMenu(context),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const AddTransactionScreen(),
+                ),
+              );
+            },
           ),
         ],
       ),
@@ -1247,7 +1175,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
             hintText: "Entrez le prix unitaire",
             hintStyle: TextStyle(color: Colors.white54),
             enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.blueAccent),
+              borderSide: BorderSide(color: Colors.white),
             ),
           ),
         ),
@@ -1290,7 +1218,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         title: const Text(
           'Watchlist',
           style: TextStyle(
-            color: Colors.white, // Remplace par la couleur de ton choix (ex: Colors.blue, Colors.white, etc.)
+            color: Colors.white, 
             fontSize: 24,
             fontWeight: FontWeight.bold,
           ),
@@ -1379,7 +1307,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                                     child: Text(
                                       inst['category'],
                                       style: const TextStyle(
-                                        color: Colors.blueAccent,
+                                        color: Colors.white,
                                         fontSize: 12,
                                         fontWeight: FontWeight.bold,
                                       ),
@@ -1939,7 +1867,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       value: _selectedAccountId,
                       icon: const Icon(
                         Icons.keyboard_arrow_down,
-                        color: Colors.blueAccent,
+                        color: Colors.white,
                       ),
                       items: _accountsList.map((acc) {
                         return DropdownMenuItem<String>(
@@ -1973,7 +1901,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       value: _selectedBenchmarkId,
                       icon: const Icon(
                         Icons.compare_arrows,
-                        color: Colors.purpleAccent,
+                        color: Colors.white,
                       ),
                       items: _benchmarkList.map((inst) {
                         return DropdownMenuItem<String>(
@@ -1982,7 +1910,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                             inst['name'],
                             style: const TextStyle(
                               fontWeight: FontWeight.bold,
-                              color: Colors.purpleAccent,
+                              color: Colors.white,
                             ),
                           ),
                         );
@@ -2046,17 +1974,17 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: !_showPercent
-                                    ? Colors.blueAccent
+                                    ? Colors.white
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.blueAccent),
+                                border: Border.all(color: Colors.white),
                               ),
                               child: Text(
                                 "Valeur (€)",
                                 style: TextStyle(
                                   color: !_showPercent
                                       ? Colors.white
-                                      : Colors.blueAccent,
+                                      : Colors.white,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -2072,17 +2000,17 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: _showPercent
-                                    ? Colors.blueAccent
+                                    ? Colors.white
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.blueAccent),
+                                border: Border.all(color: Colors.white),
                               ),
                               child: Text(
                                 "Profit (%)",
                                 style: TextStyle(
                                   color: _showPercent
                                       ? Colors.white
-                                      : Colors.blueAccent,
+                                      : Colors.white,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -2097,13 +2025,13 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
-                          color: Colors.blueAccent.withOpacity(0.1),
+                          color: Colors.white.withOpacity(0.1),
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
                           "Dividendes encaissés : ${_totalDividends.toStringAsFixed(2)} €",
                           style: const TextStyle(
-                            color: Colors.blueAccent,
+                            color: Colors.white,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -2440,101 +2368,184 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       text: widget.instrument['comment'] ?? '',
     );
 
-    await showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1C1C1E),
-          title: Text(
-            "Modifier : ${widget.instrument['name']}",
-            style: const TextStyle(color: Colors.white),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              DropdownButtonFormField<String>(
-                value: selectedCategory,
-                dropdownColor: const Color(0xFF2C2C2E),
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Catégorie',
-                  labelStyle: TextStyle(color: Colors.white54),
-                  enabledBorder: UnderlineInputBorder(
-                    borderSide: BorderSide(color: Colors.blueAccent),
-                  ),
+    // 1. Déclare tes contrôleurs et tes variables d'état pour les comptes en haut (dans ton StatefulWidget)
+final nameController = TextEditingController(text: widget.instrument['name'] ?? '');
+final isinController = TextEditingController(text: widget.instrument['ticker_isin'] ?? '');
+
+// Variables pour les comptes
+List<Map<String, dynamic>> dialogAccountsList = [];
+dynamic selectedAccountId = widget.instrument['account_id']; // ID du compte actuel de l'instrument
+
+// 2. Avant d'ouvrir le dialogue (ou au début de ta fonction), charge la liste des comptes :
+try {
+  final accountsData = await Supabase.instance.client
+      .from('accounts')
+      .select('id, name')
+      .order('name');
+  dialogAccountsList = List<Map<String, dynamic>>.from(accountsData);
+} catch (e) {
+  // Gérer l'erreur si besoin
+}
+
+// 3. Affichage du dialogue :
+await showDialog(
+  context: context,
+  builder: (context) => StatefulBuilder(
+    builder: (context, setDialogState) => AlertDialog(
+      backgroundColor: const Color(0xFF1C1C1E),
+      title: Text(
+        "Modifier : ${widget.instrument['name']}",
+        style: const TextStyle(color: Colors.white),
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // --- Champ Nom ---
+            TextField(
+              controller: nameController,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Nom de l\'instrument',
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white),
                 ),
-                items: kCategories
-                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                    .toList(),
-                onChanged: (value) =>
-                    setDialogState(() => selectedCategory = value),
               ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: commentController,
-                maxLines: 3,
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  labelText: 'Commentaire',
-                  labelStyle: TextStyle(color: Colors.white54),
-                  enabledBorder: UnderlineInputBorder(
-                    borderSide: BorderSide(color: Colors.blueAccent),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("Annuler"),
             ),
-            TextButton(
-              onPressed: () async {
-                try {
-                  await Supabase.instance.client
-                      .from('instruments')
-                      .update({
-                        'category': selectedCategory,
-                        'comment': commentController.text.trim(),
-                      })
-                      .eq('id', widget.instrument['id']);
+            const SizedBox(height: 16),
 
-                  setState(() {
-                    widget.instrument['category'] = selectedCategory;
-                    widget.instrument['comment'] = commentController.text
-                        .trim();
-                  });
+            // --- Champ Ticker / ISIN ---
+            TextField(
+              controller: isinController,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Ticker / ISIN',
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
 
-                  if (context.mounted) {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text("Instrument mis à jour !"),
-                        backgroundColor: Colors.green,
-                      ),
-                    );
-                  }
-                } catch (e) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text("Erreur: $e"),
-                        backgroundColor: Colors.red,
-                      ),
-                    );
-                  }
-                }
-              },
-              child: const Text(
-                "Enregistrer",
-                style: TextStyle(fontWeight: FontWeight.bold),
+            // --- NOUVEAU : Champ Compte Associé ---
+            DropdownButtonFormField<dynamic>(
+              value: selectedAccountId,
+              dropdownColor: const Color(0xFF2C2C2E),
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Compte associé',
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white),
+                ),
+              ),
+              items: dialogAccountsList.map((acc) {
+                return DropdownMenuItem(
+                  value: acc['id'],
+                  child: Text(acc['name'], style: const TextStyle(color: Colors.white)),
+                );
+              }).toList(),
+              onChanged: (value) =>
+                  setDialogState(() => selectedAccountId = value),
+            ),
+            const SizedBox(height: 16),
+
+            // --- Champ Catégorie ---
+            DropdownButtonFormField<String>(
+              value: selectedCategory,
+              dropdownColor: const Color(0xFF2C2C2E),
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Catégorie',
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white),
+                ),
+              ),
+              items: kCategories
+                  .map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(color: Colors.white))))
+                  .toList(),
+              onChanged: (value) =>
+                  setDialogState(() => selectedCategory = value),
+            ),
+            const SizedBox(height: 16),
+
+            // --- Champ Commentaire ---
+            TextField(
+              controller: commentController,
+              maxLines: 3,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Commentaire',
+                labelStyle: TextStyle(color: Colors.white54),
+                enabledBorder: UnderlineInputBorder(
+                  borderSide: BorderSide(color: Colors.white),
+                ),
               ),
             ),
           ],
         ),
       ),
-    );
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          style: TextButton.styleFrom(foregroundColor: Colors.white),
+          child: const Text("Annuler"),
+        ),
+        TextButton(
+          onPressed: () async {
+            try {
+              // Mise à jour de Supabase (avec le compte associé)
+              await Supabase.instance.client
+                  .from('instruments')
+                  .update({
+                    'name': nameController.text.trim(),
+                    'ticker_isin': isinController.text.trim(),
+                    'category': selectedCategory,
+                    'comment': commentController.text.trim(),
+                  })
+                  .eq('id', widget.instrument['id']);
+
+              // Mise à jour de l'état local
+              setState(() {
+                widget.instrument['name'] = nameController.text.trim();
+                widget.instrument['ticker_isin'] = isinController.text.trim();
+                widget.instrument['account_id'] = selectedAccountId;
+                widget.instrument['category'] = selectedCategory;
+                widget.instrument['comment'] = commentController.text.trim();
+              });
+
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("Instrument mis à jour !"),
+                    backgroundColor: Colors.green,
+                  ),
+                );
+              }
+            } catch (e) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text("Erreur: $e"),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+              }
+            }
+          },
+          child: const Text(
+            "Enregistrer",
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
+    ),
+  ),
+);
   }
 
   @override
@@ -2553,12 +2564,12 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       appBar: AppBar(
         title: Text(
           widget.instrument['name'],
-          style: const TextStyle(fontWeight: FontWeight.bold),
+          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         backgroundColor: Colors.black,
         actions: [
           IconButton(
-            icon: const Icon(Icons.edit_note, color: Colors.blueAccent),
+            icon: const Icon(Icons.edit_note, color: Colors.white),
             onPressed: _showEditInstrumentDialog,
           ),
           IconButton(
@@ -2610,7 +2621,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       ),
       body: _isLoading
           ? const Center(
-              child: CircularProgressIndicator(color: Colors.blueAccent),
+              child: CircularProgressIndicator(color: Colors.white),
             )
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2650,13 +2661,13 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                             vertical: 4,
                           ),
                           decoration: BoxDecoration(
-                            color: Colors.blueAccent.withOpacity(0.2),
+                            color: Colors.white.withOpacity(0.2),
                             borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
                             widget.instrument['category'],
                             style: const TextStyle(
-                              color: Colors.blueAccent,
+                              color: Colors.white,
                               fontWeight: FontWeight.bold,
                               fontSize: 12,
                             ),
@@ -2918,7 +2929,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   ),
                   trailing: const Icon(
                     Icons.calendar_today,
-                    color: Colors.blueAccent,
+                    color: Colors.white,
                   ),
                   onTap: () async {
                     final DateTime? picked = await showDatePicker(
@@ -2945,7 +2956,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                     labelText: "Quantité",
                     labelStyle: TextStyle(color: Colors.white54),
                     enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.blueAccent),
+                      borderSide: BorderSide(color: Colors.white),
                     ),
                   ),
                 ),
@@ -2960,7 +2971,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                     labelText: "Prix unitaire (€)",
                     labelStyle: TextStyle(color: Colors.white54),
                     enabledBorder: UnderlineInputBorder(
-                      borderSide: BorderSide(color: Colors.blueAccent),
+                      borderSide: BorderSide(color: Colors.white),
                     ),
                   ),
                 ),
@@ -3025,7 +3036,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             hintText: "Entrez le prix unitaire",
             hintStyle: TextStyle(color: Colors.white54),
             enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.blueAccent),
+              borderSide: BorderSide(color: Colors.white),
             ),
           ),
         ),
@@ -3342,12 +3353,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
       setState(() {
         _instrumentsList = List<Map<String, dynamic>>.from(instrumentsData);
-        if (_instrumentsList.isNotEmpty) {
+        // On ne sélectionne le premier que si rien n'est déjà sélectionné
+        if (_instrumentsList.isNotEmpty && _selectedInstrumentId == null) {
           _selectedInstrumentId = _instrumentsList.first['id'];
         }
 
         _accountsList = List<Map<String, dynamic>>.from(accountsData);
-        if (_accountsList.isNotEmpty) {
+        // On ne sélectionne le premier que si rien n'est déjà sélectionné
+        if (_accountsList.isNotEmpty && _selectedAccountId == null) {
           _selectedAccountId = _accountsList.first['id'];
         }
 
@@ -3367,7 +3380,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
   Future<void> _submitTransaction() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedInstrumentId == null) {
+    if (_selectedInstrumentId == null || _selectedInstrumentId == 'ADD_NEW_INSTRUMENT') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Veuillez sélectionner un instrument'),
@@ -3376,7 +3389,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       );
       return;
     }
-    if (_selectedAccountId == null) {
+    if (_selectedAccountId == null || _selectedAccountId == 'ADD_NEW_ACCOUNT') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Veuillez sélectionner un compte'),
@@ -3464,57 +3477,133 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         "Date : ${_selectedDate.toLocal().toString().split(' ')[0]}",
                         style: const TextStyle(color: Colors.white70),
                       ),
-                      trailing: const Icon(Icons.calendar_today),
+                      trailing: const Icon(Icons.calendar_today, color: Colors.white70),
                       onTap: () => _selectDate(context),
                     ),
                     const SizedBox(height: 16),
+                    
+                    // --- CHAMP COMPTE ---
                     DropdownButtonFormField<dynamic>(
                       value: _selectedAccountId,
+                      dropdownColor: Colors.grey[900], // Fond sombre
                       decoration: const InputDecoration(
                         labelText: 'Compte',
+                        labelStyle: TextStyle(color: Colors.white70),
                         border: OutlineInputBorder(),
                       ),
-                      items: _accountsList.map((acc) {
-                        return DropdownMenuItem(
-                          value: acc['id'],
-                          child: Text(acc['name'], style: const TextStyle(color: Colors.white70)),
-                        );
-                      }).toList(),
-                      onChanged: (value) =>
-                          setState(() => _selectedAccountId = value),
+                      items: [
+                        // Option Ajouter
+                        const DropdownMenuItem<dynamic>(
+                          value: 'ADD_NEW_ACCOUNT',
+                          child: Text(
+                            '+ Ajouter un compte',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        // Liste des comptes
+                        ..._accountsList.map((acc) {
+                          return DropdownMenuItem(
+                            value: acc['id'],
+                            child: Text(acc['name'], style: const TextStyle(color: Colors.white70)),
+                          );
+                        }),
+                      ],
+                      onChanged: (value) async {
+                        if (value == 'ADD_NEW_ACCOUNT') {
+                          // TODO: Remplacer par ta page de création de compte
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (context) => const AddAccountScreen()),
+                          );
+                          
+                          await _loadData();
+                          
+                          if (_selectedAccountId == 'ADD_NEW_ACCOUNT' || _selectedAccountId == null) {
+                            setState(() {
+                              _selectedAccountId = _accountsList.isNotEmpty ? _accountsList.first['id'] : null;
+                            });
+                          }
+                        } else {
+                          setState(() => _selectedAccountId = value);
+                        }
+                      },
                     ),
                     const SizedBox(height: 16),
+                    
+                    // --- CHAMP TYPE TRANSACTION ---
                     DropdownButtonFormField<String>(
                       value: _selectedType,
+                      dropdownColor: Colors.grey[900],
                       decoration: const InputDecoration(
                         labelText: 'Type de transaction',
+                        labelStyle: TextStyle(color: Colors.white70),
                         border: OutlineInputBorder(),
                       ),
                       items: _types.map((type) {
                         return DropdownMenuItem(
-                          value: type, 
-                          child: Text(type, style: const TextStyle(color: Colors.white70)));
-                      }).toList(),
-                      onChanged: (value) =>
-                          setState(() => _selectedType = value!),
-                    ),
-                    const SizedBox(height: 16),
-                    DropdownButtonFormField<dynamic>(
-                      value: _selectedInstrumentId,
-                      decoration: const InputDecoration(
-                        labelText: 'Instrument',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: _instrumentsList.map((inst) {
-                        return DropdownMenuItem(
-                          value: inst['id'],
-                          child: Text("${inst['name']}", style: const TextStyle(color: Colors.white70)),
+                          value: type,
+                          child: Text(type, style: const TextStyle(color: Colors.white70)),
                         );
                       }).toList(),
-                      onChanged: (value) =>
-                          setState(() => _selectedInstrumentId = value),
+                      onChanged: (value) => setState(() => _selectedType = value!),
                     ),
                     const SizedBox(height: 16),
+                    
+                    // --- CHAMP INSTRUMENT ---
+                    DropdownButtonFormField<dynamic>(
+                      value: _selectedInstrumentId,
+                      dropdownColor: Colors.grey[900],
+                      decoration: const InputDecoration(
+                        labelText: 'Instrument',
+                        labelStyle: TextStyle(color: Colors.white70),
+                        border: OutlineInputBorder(),
+                      ),
+                      items: [
+                        // Option Ajouter
+                        const DropdownMenuItem<dynamic>(
+                          value: 'ADD_NEW_INSTRUMENT',
+                          child: Text(
+                            '+ Ajouter un instrument',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        // Liste des instruments
+                        ..._instrumentsList.map((inst) {
+                          return DropdownMenuItem(
+                            value: inst['id'],
+                            child: Text("${inst['name']}", style: const TextStyle(color: Colors.white70)),
+                          );
+                        }),
+                      ],
+                      onChanged: (value) async {
+                        if (value == 'ADD_NEW_INSTRUMENT') {
+                          // TODO: Remplacer par ta page de création d'instrument
+                          await Navigator.push(
+                           context,
+                           MaterialPageRoute(builder: (context) => const AddInstrumentScreen()),
+                         );
+                          
+                          await _loadData();
+                          
+                          if (_selectedInstrumentId == 'ADD_NEW_INSTRUMENT' || _selectedInstrumentId == null) {
+                            setState(() {
+                              _selectedInstrumentId = _instrumentsList.isNotEmpty ? _instrumentsList.first['id'] : null;
+                            });
+                          }
+                        } else {
+                          setState(() => _selectedInstrumentId = value);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    
+                    // --- CHAMP QUANTITÉ ---
                     TextFormField(
                       controller: _quantityController,
                       style: const TextStyle(color: Colors.white),
@@ -3531,6 +3620,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                           (val == null || val.isEmpty) ? 'Champ requis' : null,
                     ),
                     const SizedBox(height: 16),
+                    
+                    // --- CHAMP PRIX ---
                     TextFormField(
                       controller: _priceController,
                       style: const TextStyle(color: Colors.white),
@@ -3547,6 +3638,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                           (val == null || val.isEmpty) ? 'Champ requis' : null,
                     ),
                     const SizedBox(height: 16),
+                    
+                    // --- CHAMP FRAIS ---
                     TextFormField(
                       controller: _feesController,
                       style: const TextStyle(color: Colors.white),
@@ -3561,9 +3654,11 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       ),
                     ),
                     const SizedBox(height: 24),
+                    
+                    // --- BOUTON DE SOUMISSION ---
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Color.fromARGB(255, 48, 48, 48),
+                        backgroundColor: const Color.fromARGB(255, 48, 48, 48),
                         foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
