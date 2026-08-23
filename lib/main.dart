@@ -1771,12 +1771,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           }
         }
 
-        // Référence 100% fixée une seule fois, sur le 1er jour affiché,
-        // avec un vrai prix (plus de valeur de repli arbitraire).
         benchStartPrice ??= benchPrice;
 
-        double benchPct = benchStartPrice! > 0.001
-            ? ((benchPrice - benchStartPrice!) / benchStartPrice!) * 100
+        double benchPct = benchStartPrice > 0.001
+            ? ((benchPrice - benchStartPrice) / benchStartPrice) * 100
             : 0.0;
         spotsBenchmark.add(FlSpot(dayIndex.toDouble(), benchPct));
       }
@@ -1974,7 +1972,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: !_showPercent
-                                    ? Colors.white
+                                    ? Colors.white70
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(color: Colors.white),
@@ -1983,7 +1981,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                 "Valeur (€)",
                                 style: TextStyle(
                                   color: !_showPercent
-                                      ? Colors.white
+                                      ? Colors.black
                                       : Colors.white,
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -2000,7 +1998,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: _showPercent
-                                    ? Colors.white
+                                    ? Colors.white70
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(color: Colors.white),
@@ -2009,7 +2007,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                 "Profit (%)",
                                 style: TextStyle(
                                   color: _showPercent
-                                      ? Colors.white
+                                      ? Colors.black
                                       : Colors.white,
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -2539,7 +2537,7 @@ await showDialog(
           },
           child: const Text(
             "Enregistrer",
-            style: TextStyle(fontWeight: FontWeight.bold),
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
           ),
         ),
       ],
@@ -2567,6 +2565,7 @@ await showDialog(
           style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         backgroundColor: Colors.black,
+        foregroundColor: Colors.white, 
         actions: [
           IconButton(
             icon: const Icon(Icons.edit_note, color: Colors.white),
@@ -2951,7 +2950,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
-                  style: const TextStyle(color: Colors.white),
+                  style: const TextStyle(color: Colors.white70),
                   decoration: const InputDecoration(
                     labelText: "Quantité",
                     labelStyle: TextStyle(color: Colors.white54),
@@ -2966,7 +2965,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
-                  style: const TextStyle(color: Colors.white),
+                  style: const TextStyle(color: Colors.white70),
                   decoration: const InputDecoration(
                     labelText: "Prix unitaire (€)",
                     labelStyle: TextStyle(color: Colors.white54),
@@ -3748,6 +3747,7 @@ class _AddAccountScreenState extends State<AddAccountScreen> {
             children: [
               TextFormField(
                 controller: _nameController,
+                style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
                   labelText: 'Nom du compte (ex: PEA, CTO...)',
                   labelStyle: TextStyle(color: Colors.white70),
@@ -3875,6 +3875,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
               const SizedBox(height: 16),
               DropdownButtonFormField<String>(
                 value: _selectedCategory,
+                style: const TextStyle(color: Colors.white70),
+                dropdownColor: Colors.grey[900],
                 decoration: const InputDecoration(
                   labelText: 'Catégorie',
                   labelStyle: TextStyle(color: Colors.white70),
@@ -3882,7 +3884,9 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                   border: OutlineInputBorder(),
                 ),
                 items: kCategories
-                    .map((c) => DropdownMenuItem(value: c, child: Text(c)))
+                    .map((c) => DropdownMenuItem(
+                      value: c, 
+                      child: Text(c, style: const TextStyle(color: Colors.white))))
                     .toList(),
                 onChanged: (value) => setState(() => _selectedCategory = value),
               ),
