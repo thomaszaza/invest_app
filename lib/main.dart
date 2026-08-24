@@ -414,9 +414,12 @@ class PriceService {
         final targetSearchUrl =
             'https://query2.finance.yahoo.com/v1/finance/search?q=$isin';
         final searchUrl = Uri.parse(
-          'https://corsproxy.io/?${Uri.encodeComponent(targetSearchUrl)}',
+          'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent(targetSearchUrl)}',
         );
-        final searchResponse = await http.get(searchUrl);
+        final searchResponse = await http.get(
+          searchUrl,
+          headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+        );
         if (searchResponse.statusCode == 200) {
           final data = json.decode(searchResponse.body);
           if (data['quotes'] != null && data['quotes'].isNotEmpty) {
@@ -429,9 +432,12 @@ class PriceService {
         final targetChartUrl =
             'https://query1.finance.yahoo.com/v8/finance/chart/$symbol';
         final chartUrl = Uri.parse(
-          'https://corsproxy.io/?${Uri.encodeComponent(targetChartUrl)}',
+          'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent(targetChartUrl)}',
         );
-        final response = await http.get(chartUrl);
+        final response = await http.get(
+          chartUrl,
+          headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+        );
         if (response.statusCode == 200) {
           final data = json.decode(response.body);
           final price =
@@ -472,9 +478,12 @@ class PriceService {
     } else if (isin != null && isin.isNotEmpty && isin != 'CASH') {
       try {
         final searchUrl = Uri.parse(
-          'https://corsproxy.io/?${Uri.encodeComponent('https://query2.finance.yahoo.com/v1/finance/search?q=$isin')}',
+          'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent('https://query2.finance.yahoo.com/v1/finance/search?q=$isin')}',
         );
-        final res = await http.get(searchUrl);
+        final res = await http.get(
+          searchUrl,
+          headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+        );
         if (res.statusCode == 200) {
           final data = json.decode(res.body);
           if (data['quotes'] != null && data['quotes'].isNotEmpty) {
@@ -489,11 +498,14 @@ class PriceService {
     final targetUrl =
         'https://query1.finance.yahoo.com/v8/finance/chart/$symbol?range=$range&interval=1d';
     final proxyUrl = Uri.parse(
-      'https://corsproxy.io/?${Uri.encodeComponent(targetUrl)}',
+      'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent(targetUrl)}',
     );
 
     try {
-      final response = await http.get(proxyUrl);
+      final response = await http.get(
+        proxyUrl,
+        headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+      );
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final result = data['chart']['result'][0];
@@ -1406,6 +1418,22 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   Map<String, Map<String, double>> _yahooHistories = {};
   Map<String, Map<String, dynamic>> _aferData = {};
 
+  List<Map<String, dynamic>> _pieData = [];
+  bool _isPieLoading = true;
+
+  final List<Color> _pieColors = [
+    Colors.greenAccent,
+    Colors.blueAccent,
+    Colors.orangeAccent,
+    Colors.purpleAccent,
+    Colors.redAccent,
+    Colors.cyanAccent,
+    Colors.pinkAccent,
+    Colors.amberAccent,
+    Colors.tealAccent,
+    Colors.indigoAccent,
+  ];
+
   @override
   void initState() {
     super.initState();
@@ -1509,6 +1537,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           if (_selectedBenchmarkId == null) _selectedBenchmarkId = 'NONE';
         });
         _calculateChart();
+        _calculatePieData();
       }
     } catch (e) {
       print("Erreur globale Perf: $e");
@@ -1829,6 +1858,100 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     });
   }
 
+  Future<void> _calculatePieData() async {
+    setState(() => _isPieLoading = true);
+
+    List<Map<String, dynamic>> filteredTx = _allTransactions;
+    if (_selectedAccountId != null && _selectedAccountId != 'ALL') {
+      filteredTx = _allTransactions
+          .where((tx) => tx['account_id'].toString() == _selectedAccountId)
+          .toList();
+    }
+
+    Map<String, Map<String, dynamic>> tempPositions = {};
+
+    for (var tx in filteredTx) {
+      if (tx['instruments'] == null) continue;
+      String name = tx['instruments']['name'];
+      String isin = tx['instruments']['ticker_isin'] ?? '';
+      String type = tx['transaction_type'];
+      double qty = (tx['quantity'] ?? 0).toDouble();
+      double price = (tx['unit_price'] ?? 0).toDouble();
+
+      if (!tempPositions.containsKey(name)) {
+        tempPositions[name] = {
+          'name': name,
+          'isin': isin,
+          'id': tx['instruments']['id'],
+          'quantity': 0.0,
+          'totalBoughtQty': 0.0,
+          'totalInvested': 0.0,
+        };
+      }
+
+      if (type == 'Buy' || type == 'Deposit') {
+        tempPositions[name]!['quantity'] += qty;
+        tempPositions[name]!['totalBoughtQty'] += qty;
+        tempPositions[name]!['totalInvested'] += (qty * price);
+      } else if (type == 'Sell') {
+        double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
+            ? tempPositions[name]!['totalInvested'] /
+                tempPositions[name]!['totalBoughtQty']
+            : 0.0;
+        tempPositions[name]!['quantity'] -= qty;
+        tempPositions[name]!['totalBoughtQty'] -= qty;
+        tempPositions[name]!['totalInvested'] -= (qty * currentPru);
+      }
+    }
+
+    List<Map<String, dynamic>> slices = [];
+
+    for (var pos in tempPositions.values) {
+      if (pos['quantity'] <= 0.001) continue;
+      if (pos['name'].toString().toLowerCase().contains('liquidit') ||
+          pos['name'].toString().toUpperCase().contains('CASH')) {
+        continue;
+      }
+
+      double pru = pos['totalBoughtQty'] > 0.001
+          ? pos['totalInvested'] / pos['totalBoughtQty']
+          : 0.0;
+
+      double? livePrice = await PriceService.fetchLivePrice(
+        pos['name'],
+        pos['isin'],
+        pos['id'],
+      );
+
+      double value = (livePrice != null && !livePrice.isNaN)
+          ? livePrice * pos['quantity']
+          : pru * pos['quantity'];
+
+      if (value.isNaN || value <= 0) continue;
+
+      slices.add({'name': pos['name'], 'value': value});
+    }
+
+    slices.sort(
+      (a, b) => (b['value'] as double).compareTo(a['value'] as double),
+    );
+
+    double total = slices.fold(0.0, (sum, s) => sum + (s['value'] as double));
+
+    for (int i = 0; i < slices.length; i++) {
+      slices[i]['color'] = _pieColors[i % _pieColors.length];
+      slices[i]['percent'] =
+          total > 0.001 ? (slices[i]['value'] / total) * 100 : 0.0;
+    }
+
+    if (mounted) {
+      setState(() {
+        _pieData = slices;
+        _isPieLoading = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     List<FlSpot> activeChartData = _showPercent
@@ -1850,7 +1973,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : Column(
+          : SingleChildScrollView(
+              child: Column(
               children: [
                 Container(
                   color: Colors.black,
@@ -1882,6 +2006,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                       onChanged: (value) {
                         setState(() => _selectedAccountId = value);
                         _calculateChart();
+                        _calculatePieData();
                       },
                     ),
                   ),
@@ -2038,7 +2163,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
-                Expanded(
+                SizedBox(
+                  height: 300,
                   child: Padding(
                     padding: const EdgeInsets.only(
                       right: 20,
@@ -2250,8 +2376,119 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                     }).toList(),
                   ),
                 ),
+                const SizedBox(height: 24),
+                _buildPieChartSection(),
+                const SizedBox(height: 24),
               ],
             ),
+            ),
+    );
+  }
+
+  Widget _buildPieChartSection() {
+    if (_isPieLoading) {
+      return const Padding(
+        padding: EdgeInsets.all(30),
+        child: Center(
+          child: CircularProgressIndicator(color: Colors.white),
+        ),
+      );
+    }
+
+    if (_pieData.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(30),
+        child: Center(
+          child: Text(
+            "Aucune position sur ce compte",
+            style: TextStyle(color: Colors.white54),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "Répartition du portefeuille",
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 220,
+            child: PieChart(
+              PieChartData(
+                sectionsSpace: 2,
+                centerSpaceRadius: 50,
+                sections: _pieData.map((slice) {
+                  return PieChartSectionData(
+                    color: slice['color'] as Color,
+                    value: slice['value'] as double,
+                    title: "${(slice['percent'] as double).toStringAsFixed(0)}%",
+                    radius: 60,
+                    titleStyle: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          ..._pieData.map((slice) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  Container(
+                    width: 12,
+                    height: 12,
+                    decoration: BoxDecoration(
+                      color: slice['color'] as Color,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      slice['name'],
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    "${(slice['value'] as double).toStringAsFixed(2)} €",
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    "${(slice['percent'] as double).toStringAsFixed(1)}%",
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
     );
   }
 }
@@ -2275,6 +2512,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   List<String> _dates = [];
   Map<String, double> _fullHistory = {};
   double? _currentPrice;
+  double? _pruLine;
+  double? _alertThresholdLine;
 
   @override
   void initState() {
@@ -2315,8 +2554,78 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       _fullHistory[today] = live;
     }
 
+    await _loadReferenceLines();
+
     _buildChart();
     if (mounted) setState(() => _isLoading = false);
+  }
+
+  Future<void> _loadReferenceLines() async {
+    final supabase = Supabase.instance.client;
+    dynamic id = widget.instrument['id'];
+
+    // PRU : déjà connu si on vient de "Positions" (pos['pru'])
+    if (widget.instrument['pru'] != null &&
+        (widget.instrument['pru'] as double) > 0.001) {
+      _pruLine = widget.instrument['pru'];
+    } else if (id != null) {
+      // Sinon (cas Watchlist), on le recalcule depuis les transactions
+      try {
+        final txData = await supabase
+            .from('transactions')
+            .select('transaction_type, quantity, unit_price')
+            .eq('instrument_id', id)
+            .order('date', ascending: true);
+
+        double qty = 0.0;
+        double boughtQty = 0.0;
+        double invested = 0.0;
+
+        for (var tx in txData) {
+          double q = (tx['quantity'] ?? 0).toDouble();
+          double p = (tx['unit_price'] ?? 0).toDouble();
+          String type = tx['transaction_type'];
+
+          if (type == 'Buy' || type == 'Deposit') {
+            qty += q;
+            boughtQty += q;
+            invested += (q * p);
+          } else if (type == 'Sell') {
+            double currentPru = boughtQty > 0.001 ? invested / boughtQty : 0.0;
+            qty -= q;
+            boughtQty -= q;
+            invested -= (q * currentPru);
+          }
+        }
+
+        if (qty > 0.001 && boughtQty > 0.001) {
+          _pruLine = invested / boughtQty;
+        }
+      } catch (e) {
+        print("Erreur calcul PRU watchlist: $e");
+      }
+    }
+
+    // Seuil d'alerte actif (s'il y en a un)
+    if (id != null) {
+      try {
+        final alerts = await supabase
+            .from('alerts')
+            .select('threshold_price')
+            .eq('instrument_id', id)
+            .eq('active', true)
+            .eq('triggered', false)
+            .order('id', ascending: false)
+            .limit(1);
+
+        if (alerts.isNotEmpty) {
+          _alertThresholdLine =
+              (alerts.first['threshold_price'] as num).toDouble();
+        }
+      } catch (e) {
+        print("Erreur récupération alerte: $e");
+      }
+    }
   }
 
   void _buildChart() {
@@ -2789,6 +3098,45 @@ await showDialog(
                                 ),
                               ),
                               borderData: FlBorderData(show: false),
+                              extraLinesData: ExtraLinesData(
+                                horizontalLines: [
+                                  if (_pruLine != null)
+                                    HorizontalLine(
+                                      y: _pruLine!,
+                                      color: Colors.white70,
+                                      strokeWidth: 1.5,
+                                      dashArray: [6, 4],
+                                      label: HorizontalLineLabel(
+                                        show: true,
+                                        alignment: Alignment.topRight,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        labelResolver: (line) =>
+                                            "PRU ${_pruLine!.toStringAsFixed(2)} €",
+                                      ),
+                                    ),
+                                  if (_alertThresholdLine != null)
+                                    HorizontalLine(
+                                      y: _alertThresholdLine!,
+                                      color: Colors.white70,
+                                      strokeWidth: 1,
+                                      label: HorizontalLineLabel(
+                                        show: true,
+                                        alignment: Alignment.bottomRight,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                        labelResolver: (line) =>
+                                            "Alerte ${_alertThresholdLine!.toStringAsFixed(2)} €",
+                                      ),
+                                    ),
+                                ],
+                              ),
                               lineTouchData: LineTouchData(
                                 touchTooltipData: LineTouchTooltipData(
                                   getTooltipItems: (touchedSpots) =>
@@ -2884,6 +3232,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   List<Map<String, dynamic>> _history = [];
   Map<String, double> _livePrices = {};
   Map<String, double> _ownedQuantities = {};
+  List<Map<String, dynamic>> _accountsList = [];
 
   @override
   void initState() {
@@ -3082,6 +3431,11 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           .select('id, name, ticker_isin, category, comment')
           .order('name');
 
+      final accountsData = await supabase
+          .from('accounts')
+          .select('id, name')
+          .order('name');
+
       Map<String, double> qtys = {};
       for (var tx in historyData) {
         if (tx['instruments'] == null) continue;
@@ -3110,6 +3464,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         setState(() {
           _history = List<Map<String, dynamic>>.from(historyData);
           _instruments = List<Map<String, dynamic>>.from(instrumentsData);
+          _accountsList = List<Map<String, dynamic>>.from(accountsData);
           _livePrices = prices;
           _isLoading = false;
         });
@@ -3119,10 +3474,145 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     }
   }
 
+  Future<void> _showEditAccountDialog(Map<String, dynamic> account) async {
+    final TextEditingController nameController = TextEditingController(
+      text: account['name'],
+    );
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1C1C1E),
+        title: const Text(
+          "Modifier le compte",
+          style: TextStyle(color: Colors.white),
+        ),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: "Nom du compte",
+            labelStyle: TextStyle(color: Colors.white54),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Annuler"),
+          ),
+          TextButton(
+            onPressed: () async {
+              final newName = nameController.text.trim();
+              if (newName.isEmpty) return;
+              try {
+                await supabase
+                    .from('accounts')
+                    .update({'name': newName})
+                    .eq('id', account['id']);
+
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Compte mis à jour !"),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+                _loadPortfolioData();
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text("Erreur : $e"),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
+            },
+            child: const Text(
+              "Enregistrer",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteAccount(Map<String, dynamic> account) async {
+    bool confirm =
+        await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1C1C1E),
+            title: const Text(
+              "Supprimer le compte",
+              style: TextStyle(color: Colors.white),
+            ),
+            content: Text(
+              "Voulez-vous vraiment supprimer \"${account['name']}\" ? "
+              "Cette action est irréversible. Si des transactions sont "
+              "liées à ce compte, la suppression peut échouer.",
+              style: const TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text("Annuler"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  "Supprimer",
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirm) return;
+
+    try {
+      await supabase.from('accounts').delete().eq('id', account['id']);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Compte supprimé."),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+      _loadPortfolioData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              "Impossible de supprimer : des transactions utilisent "
+              "peut-être encore ce compte.",
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Scaffold(
         backgroundColor: Colors.black,
         appBar: AppBar(
@@ -3142,6 +3632,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             indicatorColor: Colors.white,
             tabs: [
               Tab(text: 'Valeurs'),
+              Tab(text: 'Comptes'),
               Tab(text: 'Historique'),
             ],
           ),
@@ -3217,7 +3708,55 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                       );
                     },
                   ),
-                  // --- ONGLET 2 : HISTORIQUE (AVEC CLIC DE MODIFICATION) ---
+                  // --- ONGLET 2 : COMPTES ---
+                  _accountsList.isEmpty
+                      ? const Center(
+                          child: Text(
+                            "Aucun compte pour l'instant",
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(8),
+                          itemCount: _accountsList.length,
+                          itemBuilder: (context, index) {
+                            final acc = _accountsList[index];
+                            return Card(
+                              color: const Color(0xFF1C1C1E),
+                              child: ListTile(
+                                title: Text(
+                                  acc['name'],
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.edit,
+                                        color: Colors.white54,
+                                      ),
+                                      onPressed: () =>
+                                          _showEditAccountDialog(acc),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        color: Colors.redAccent,
+                                      ),
+                                      onPressed: () =>
+                                          _confirmDeleteAccount(acc),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                  // --- ONGLET 3 : HISTORIQUE (AVEC CLIC DE MODIFICATION) ---
                   ListView.builder(
                     padding: const EdgeInsets.all(8),
                     itemCount: _history.length,
