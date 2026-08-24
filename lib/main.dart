@@ -2047,7 +2047,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                 ),
                 Container(
                   width: double.infinity,
-                  color: const Color(0xFF1C1C1E),
+                  color: const Color.fromARGB(255, 30, 30, 30),
                   padding: const EdgeInsets.all(20),
                   child: Column(
                     children: [
@@ -2097,17 +2097,17 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: !_showPercent
-                                    ? Colors.white70
+                                    ? Colors.white30
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.white),
+                                border: Border.all(color: Colors.white30),
                               ),
                               child: Text(
                                 "Valeur (€)",
                                 style: TextStyle(
                                   color: !_showPercent
-                                      ? Colors.black
-                                      : Colors.white,
+                                      ? Colors.white
+                                      : Colors.white30,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -2123,17 +2123,17 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                               ),
                               decoration: BoxDecoration(
                                 color: _showPercent
-                                    ? Colors.white70
+                                    ? Colors.white30
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.white),
+                                border: Border.all(color: Colors.white30),
                               ),
                               child: Text(
                                 "Profit (%)",
                                 style: TextStyle(
                                   color: _showPercent
-                                      ? Colors.black
-                                      : Colors.white,
+                                      ? Colors.white
+                                      : Colors.white30,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
@@ -2966,7 +2966,7 @@ await showDialog(
                         Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 10,
-                            vertical: 4,
+                            vertical: 3,
                           ),
                           decoration: BoxDecoration(
                             color: Colors.white.withOpacity(0.2),
@@ -3268,7 +3268,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                   "Instrument : ${tx['instruments']?['name'] ?? 'Inconnu'}",
                   style: const TextStyle(color: Colors.white54, fontSize: 13),
                 ),
-                const SizedBox(height: 15),
+                const SizedBox(height: 10),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text(
@@ -3666,7 +3666,15 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
                       return Card(
                         color: const Color(0xFF1C1C1E),
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
                         child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 0,
+                            ),
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
@@ -3723,7 +3731,15 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                             final acc = _accountsList[index];
                             return Card(
                               color: const Color(0xFF1C1C1E),
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
                               child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 0,
+                            ),
                                 title: Text(
                                   acc['name'],
                                   style: const TextStyle(
@@ -3784,7 +3800,15 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
                       return Card(
                         color: const Color(0xFF1C1C1E),
+                        margin: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
                         child: ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 0,
+                            ),
                           onTap: () => _showEditTransactionDialog(tx),
                           title: Text(
                             tx['instruments']?['name'] ?? 'Inconnu',
