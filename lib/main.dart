@@ -1,13 +1,14 @@
 import 'dart:ui';
-
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
-
 import 'dart:convert';
-
 import 'package:http/http.dart' as http;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:file_picker/file_picker.dart' as fp;
+import 'package:csv/csv.dart' as my_csv;
+import 'package:intl/intl.dart';
+
 
 const String supabaseUrl = 'https://pfzsgikdqpnbyhaokdwn.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_owIZox6AqByWrqOiE_bbhQ_opZNPqaG';
@@ -532,6 +533,82 @@ class PriceService {
 
     return history;
   }
+
+  static Future<Map<String, double>> fetchYahooIntraday(
+    String instrumentName, {
+    String? isin,
+    String range = '5d',
+    String interval = '15m',
+  }) async {
+    final cacheKey = '${instrumentName}|${isin ?? ''}|$range|$interval';
+
+    final cachedHistory = PriceCache.getHistory(cacheKey);
+    if (cachedHistory != null && cachedHistory.isNotEmpty) {
+      return cachedHistory;
+    }
+
+    Map<String, double> history = {};
+    String? symbol;
+
+    if (instrumentName.startsWith('EPA:')) {
+      symbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
+    } else if (isin != null && isin.isNotEmpty && isin != 'CASH') {
+      try {
+        final searchUrl = Uri.parse(
+          'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent('https://query2.finance.yahoo.com/v1/finance/search?q=$isin')}',
+        );
+        final res = await http.get(
+          searchUrl,
+          headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+        );
+        if (res.statusCode == 200) {
+          final data = json.decode(res.body);
+          if (data['quotes'] != null && data['quotes'].isNotEmpty) {
+            symbol = data['quotes'][0]['symbol'];
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (symbol == null) return history;
+
+    final targetUrl =
+        'https://query1.finance.yahoo.com/v8/finance/chart/$symbol?range=$range&interval=$interval';
+    final proxyUrl = Uri.parse(
+      'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent(targetUrl)}',
+    );
+
+    try {
+      final response = await http.get(
+        proxyUrl,
+        headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final result = data['chart']['result'][0];
+        List<dynamic> timestamps = result['timestamp'];
+        List<dynamic> closePrices = result['indicators']['quote'][0]['close'];
+
+        for (int i = 0; i < timestamps.length; i++) {
+          if (closePrices[i] != null) {
+            DateTime dt = DateTime.fromMillisecondsSinceEpoch(
+              timestamps[i] * 1000,
+            );
+            // Clé = date + heure complète (pas juste le jour, contrairement à fetchYahooHistory)
+            history[dt.toIso8601String()] = (closePrices[i] as num).toDouble();
+          }
+        }
+      }
+    } catch (e) {
+      print("Erreur historique intraday: $e");
+    }
+
+    if (history.isNotEmpty) {
+      PriceCache.setHistory(cacheKey, history);
+    }
+
+    return history;
+  }
 }
 
 class AlertsService {
@@ -775,114 +852,100 @@ class _PositionsScreenState extends State<PositionsScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final txData = await supabase
-          .from('transactions')
-          .select('*, instruments(id, name, ticker_isin, category, comment)')
-          .order('date', ascending: true);
+      // 1. On appelle directement la Vue SQL. Plus aucun calcul lourd sur le téléphone !
+      final viewData = await supabase.from('portfolio_view').select('*');
 
-      Map<String, Map<String, dynamic>> tempPositions = {};
+      List<Map<String, dynamic>> validPositions = [];
+      double initialTotalInvested = 0.0;
+      double initialGlobalValue = 0.0;
 
-      for (var tx in txData) {
-        if (tx['instruments'] == null) continue;
-        String name = tx['instruments']['name'];
-        String isin = tx['instruments']['ticker_isin'] ?? '';
-        String type = tx['transaction_type'];
-        double qty = (tx['quantity'] ?? 0).toDouble();
-        double price = (tx['unit_price'] ?? 0).toDouble();
+      // 2. On prépare simplement les données pour l'affichage
+      for (var row in viewData) {
+        String nameStr = row['name'].toString().toLowerCase();
+        
+        // On continue d'ignorer le cash
+        if (!nameStr.contains('liquidit') && !nameStr.contains('cash')) {
+          
+          // On s'assure que les nombres venant du SQL sont bien au format double
+          double qty = (row['quantity'] ?? 0).toDouble();
+          double pru = (row['pru'] ?? 0).toDouble();
 
-        if (!tempPositions.containsKey(name)) {
-          tempPositions[name] = {
-            'name': name,
-            'isin': isin,
-            'id': tx['instruments']['id'],
-            'category': tx['instruments']['category'],
-            'comment': tx['instruments']['comment'],
-            'quantity': 0.0,
-            'totalBoughtQty': 0.0,
-            'totalInvested': 0.0,
-            'pru': 0.0,
+          Map<String, dynamic> pos = {
+            'id': row['id'],
+            'name': row['name'],
+            'isin': row['isin'] ?? '',
+            'category': row['category'],
+            'comment': row['comment'],
+            'quantity': qty,
+            'pru': pru,
+            'currentPrice': null, 
+            'totalValue': pru * qty, // Valeur par défaut avant d'avoir internet
           };
-        }
 
-        if (type == 'Buy' || type == 'Deposit') {
-          tempPositions[name]!['quantity'] += qty;
-          tempPositions[name]!['totalBoughtQty'] += qty;
-          tempPositions[name]!['totalInvested'] += (qty * price);
-        } else if (type == 'Sell') {
-          // CORRECTION: Diminuer le total investi proportionnellement (correction PRU)
-          double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
-              ? tempPositions[name]!['totalInvested'] /
-                    tempPositions[name]!['totalBoughtQty']
-              : 0.0;
-          tempPositions[name]!['quantity'] -= qty;
-          tempPositions[name]!['totalBoughtQty'] -= qty;
-          tempPositions[name]!['totalInvested'] -= (qty * currentPru);
+          if (!pru.isNaN && !qty.isNaN) {
+            initialTotalInvested += (pru * qty);
+            initialGlobalValue += pos['totalValue'];
+          }
+          validPositions.add(pos);
         }
       }
 
-      List<Map<String, dynamic>> finalPositions = [];
-      double totalGlobalValue = 0.0;
-      double totalInvested = 0.0;
+      // Tri initial basé sur l'investissement
+      validPositions.sort((a, b) => (b['totalValue'] as double).compareTo(a['totalValue'] as double));
 
-      for (var pos in tempPositions.values) {
-        if (pos['quantity'] > 0.001) {
-          // On ignore totalement le cash
-          if (pos['name'].toString().toLowerCase().contains('liquidit') ||
-              pos['name'].toString().toUpperCase().contains('CASH')) {
-            continue;
-          }
+      // 3. Affichage immédiat du portefeuille
+      if (mounted) {
+        setState(() {
+          _positions = validPositions;
+          _totalInvestedValue = initialTotalInvested.isNaN ? 0.0 : initialTotalInvested;
+          _totalPortfolioValue = initialGlobalValue.isNaN ? 0.0 : initialGlobalValue;
+          _isLoading = false;
+        });
+      }
 
-          pos['pru'] = pos['totalBoughtQty'] > 0.001
-              ? (pos['totalInvested'] / pos['totalBoughtQty'])
-              : 0.0;
-
+      // 4. Récupération des prix en direct, en parallèle
+      List<Future<void>> fetchFutures = validPositions.map((pos) async {
+        try {
           double? livePrice = await PriceService.fetchLivePrice(
             pos['name'],
             pos['isin'],
             pos['id'],
           );
-          pos['currentPrice'] = livePrice;
 
           if (livePrice != null && !livePrice.isNaN) {
-            pos['totalValue'] = livePrice * pos['quantity'];
-          } else {
-            pos['totalValue'] = pos['pru'] * pos['quantity'];
-          }
+            double oldTotalValue = pos['totalValue'];
+            double newTotalValue = livePrice * pos['quantity'];
 
-          await AlertsService.checkAlerts(pos, livePrice);
+            await AlertsService.checkAlerts(pos, livePrice);
 
-          if (!pos['totalValue'].isNaN) {
-            totalGlobalValue += pos['totalValue'];
+            // Mise à jour visuelle dès qu'un prix arrive
+            if (mounted) {
+              setState(() {
+                pos['currentPrice'] = livePrice;
+                pos['totalValue'] = newTotalValue;
+                _totalPortfolioValue = _totalPortfolioValue - oldTotalValue + newTotalValue;
+              });
+            }
           }
-          if (!pos['pru'].isNaN && !pos['quantity'].isNaN) {
-            totalInvested += (pos['pru'] * pos['quantity']);
-          }
-
-          finalPositions.add(pos);
+        } catch (e) {
+          print("Erreur prix pour ${pos['name']}: $e");
         }
-      }
+      }).toList();
 
-      finalPositions.sort(
-        (a, b) =>
-            (b['totalValue'] as double).compareTo(a['totalValue'] as double),
-      );
+      await Future.wait(fetchFutures);
 
+      // Tri final
       if (mounted) {
         setState(() {
-          _positions = finalPositions;
-          _totalPortfolioValue = totalGlobalValue.isNaN
-              ? 0.0
-              : totalGlobalValue;
-          _totalInvestedValue = totalInvested.isNaN ? 0.0 : totalInvested;
-          _isLoading = false;
+          _positions.sort((a, b) => (b['totalValue'] as double).compareTo(a['totalValue'] as double));
         });
       }
+
     } catch (e) {
       print("Erreur Positions: $e");
       if (mounted) setState(() => _isLoading = false);
     }
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -966,16 +1029,21 @@ class _PositionsScreenState extends State<PositionsScreen> {
                   ),
                 ),
                 Expanded(
-                  child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    itemCount: _positions.length,
-                    itemBuilder: (context, index) {
-                      final pos = _positions[index];
-                      double currentPrice = pos['currentPrice'] ?? 0.0;
-                      double pru = pos['pru'];
+                    child: RefreshIndicator(
+                    onRefresh: _loadPositions, // Relance le chargement et les calculs
+                    color: Colors.white,
+                    backgroundColor: const Color(0xFF1C1C1E),
+                    child: ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(), // Indispensable pour pouvoir tirer même s'il y a peu d'éléments
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      itemCount: _positions.length,
+                      itemBuilder: (context, index) {
+                       final pos = _positions[index];
+                       double currentPrice = pos['currentPrice'] ?? 0.0;
+                        double pru = pos['pru'];
 
                       Color valueColor = Colors.white;
                       String perfText = "";
@@ -1113,8 +1181,9 @@ class _PositionsScreenState extends State<PositionsScreen> {
                     },
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
+          ),
     );
   }
 }
@@ -1142,31 +1211,57 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
 
   Future<void> _loadWatchlist() async {
     setState(() => _isLoading = true);
-    final data = await supabase
-        .from('instruments')
-        .select('*')
-        .eq('is_watchlist', true);
 
-    List<Map<String, dynamic>> list = List<Map<String, dynamic>>.from(data);
+    try {
+      // 1. On récupère d'abord juste la liste depuis la base de données
+      final data = await supabase
+          .from('instruments')
+          .select('*')
+          .eq('is_watchlist', true);
 
-    List<Future> futures = list.map((inst) async {
-      String isin = inst['ticker_isin'] ?? '';
-      double? price = await PriceService.fetchLivePrice(
-        inst['name'],
-        isin,
-        inst['id'],
-      );
-      inst['currentPrice'] = price;
-      inst['isin'] = isin;
-    }).toList();
+      List<Map<String, dynamic>> list = List<Map<String, dynamic>>.from(data);
 
-    await Future.wait(futures);
+      // 2. MAGIE UX : On affiche IMMÉDIATEMENT la liste (sans les prix) et on coupe le chargement
+      if (mounted) {
+        setState(() {
+          _watchlist = list;
+          _isLoading = false; 
+        });
+      }
 
-    if (mounted)
-      setState(() {
-        _watchlist = list;
-        _isLoading = false;
-      });
+      // 3. On va chercher les prix en arrière-plan
+      List<Future<void>> futures = list.map((inst) async {
+        String isin = inst['ticker_isin'] ?? '';
+        inst['isin'] = isin;
+        
+        try {
+          double? price = await PriceService.fetchLivePrice(
+            inst['name'],
+            isin,
+            inst['id'],
+          );
+          
+          // 4. Dès qu'UN prix est trouvé, on met à jour la ligne correspondante à l'écran
+          if (mounted) {
+            setState(() {
+              inst['currentPrice'] = price;
+            });
+          }
+        } catch (e) {
+          print("Erreur de prix pour ${inst['name']}: $e");
+        }
+      }).toList();
+
+      // On laisse les requêtes se terminer en tâche de fond
+      await Future.wait(futures);
+
+    } catch (e) {
+      // Sécurité : si la base de données ne répond pas, on arrête de charger
+      print("Erreur globale Watchlist: $e");
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
@@ -1208,6 +1303,9 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                   'date': today,
                   'price': newPrice,
                 });
+
+                PriceCache.set(inst['id'].toString(), newPrice);
+
                 Navigator.pop(context);
                 _loadWatchlist();
               }
@@ -1230,7 +1328,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         title: const Text(
           'Watchlist',
           style: TextStyle(
-            color: Colors.white, 
+            color: Colors.white,
             fontSize: 24,
             fontWeight: FontWeight.bold,
           ),
@@ -1416,7 +1514,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
   List<Map<String, dynamic>> _allTransactions = [];
   Map<String, Map<String, double>> _yahooHistories = {};
+  Map<String, Map<String, double>> _yahooIntraday = {};
+  Map<String, String> _instrumentIsins = {};
   Map<String, Map<String, dynamic>> _aferData = {};
+  bool _isLoadingIntraday = false;
 
   List<Map<String, dynamic>> _pieData = [];
   bool _isPieLoading = true;
@@ -1444,20 +1545,21 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final accountsData = await supabase
-          .from('accounts')
-          .select('id, name')
-          .order('name');
-      final txData = await supabase
-          .from('transactions')
-          .select('*, instruments(id, name, ticker_isin)')
-          .order('date', ascending: true);
+      final results = await Future.wait([
+        supabase.from('accounts').select('id, name').order('name'),
+        supabase
+            .from('transactions')
+            .select('*, instruments(id, name, ticker_isin)')
+            .order('date', ascending: true),
+        supabase
+            .from('daily_prices')
+            .select('*, instruments(name)')
+            .order('date', ascending: true),
+      ]);
+      final accountsData = results[0];
+      final txData = results[1];
       _allTransactions = List<Map<String, dynamic>>.from(txData);
-
-      final dailyData = await supabase
-          .from('daily_prices')
-          .select('*, instruments(name)')
-          .order('date', ascending: true);
+      final dailyData = results[2];
       Map<String, double> aferLatestPrices = {};
       for (var row in dailyData) {
         if (row['instruments'] != null) {
@@ -1467,16 +1569,24 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
 
       final instrumentsData = await supabase.from('instruments').select('*');
+
+      final yahooFutures = <Future>[];
       for (var inst in instrumentsData) {
         String name = inst['name'];
         String isin = inst['ticker_isin'] ?? '';
-
+        _instrumentIsins[name] = isin;
         if (name.startsWith('EPA:') || (isin.isNotEmpty && isin != 'CASH')) {
-          var hist = await PriceService.fetchYahooHistory(name, isin: isin);
-          if (hist.isNotEmpty) {
-            _yahooHistories[name] = hist;
-          }
+          yahooFutures.add(
+            PriceService.fetchYahooHistory(name, isin: isin).then((hist) {
+              if (hist.isNotEmpty) _yahooHistories[name] = hist;
+            }),
+          );
         }
+      }
+      await Future.wait(yahooFutures);
+
+      for (var inst in instrumentsData) {
+        String name = inst['name'];
 
         if (!_yahooHistories.containsKey(name)) {
           var aferBuys = _allTransactions
@@ -1520,25 +1630,42 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           .select('id, name')
           .order('name');
 
-      if (mounted) {
-        setState(() {
-          _accountsList = [
-            {'id': 'ALL', 'name': 'Tous les comptes'},
-            ...List<Map<String, dynamic>>.from(accountsData),
-          ];
-          if (_selectedAccountId == null && _accountsList.isNotEmpty) {
-            _selectedAccountId = 'ALL';
-          }
 
-          _benchmarkList = [
-            {'id': 'NONE', 'name': 'Aucun Benchmark'},
-            ...List<Map<String, dynamic>>.from(benchmarkData),
-          ];
-          if (_selectedBenchmarkId == null) _selectedBenchmarkId = 'NONE';
-        });
-        _calculateChart();
-        _calculatePieData();
-      }
+if (mounted) {
+  setState(() {
+    _accountsList = [
+      {'id': 'ALL', 'name': 'Tous les comptes'},
+      ...List<Map<String, dynamic>>.from(accountsData),
+    ];
+
+    if (_selectedAccountId == null && _accountsList.isNotEmpty) {
+      _selectedAccountId = 'ALL';
+    }
+
+    _benchmarkList = [
+      {'id': 'NONE', 'name': 'Aucun Benchmark'},
+      ...List<Map<String, dynamic>>.from(benchmarkData),
+    ];
+
+    if (_selectedBenchmarkId == null) {
+      _selectedBenchmarkId = 'NONE';
+    }
+  });
+
+  // Calcul de la valeur actuelle avec EXACTEMENT
+  // la même méthode que PositionsScreen.
+  final currentValue = await _getCurrentPortfolioValue();
+
+  if (mounted) {
+    setState(() {
+      _currentPortfolioValue = currentValue;
+    });
+  }
+
+  _calculateChart();
+  _calculatePieData();
+}
+
     } catch (e) {
       print("Erreur globale Perf: $e");
     } finally {
@@ -1571,6 +1698,103 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   // garde-fou : si le benchmark n'a aucune donnée de prix exploitable,
   // on n'affiche plus de fausse ligne plate à 0%.
   // ---------------------------------------------------------------------
+  double _interpolatedPrice(
+    List<MapEntry<DateTime, double>> hist,
+    DateTime d,
+    double fallbackPru,
+  ) {
+    if (hist.isEmpty) return fallbackPru;
+    if (d.isBefore(hist.first.key)) return hist.first.value;
+    if (!d.isBefore(hist.last.key)) return hist.last.value;
+
+    int lo = 0, hi = hist.length - 1;
+    while (lo < hi - 1) {
+      int mid = (lo + hi) ~/ 2;
+      if (hist[mid].key.isAfter(d)) {
+        hi = mid;
+      } else {
+        lo = mid;
+      }
+    }
+    final before = hist[lo];
+    final after = hist[hi];
+    final totalGapMs = after.key.difference(before.key).inMilliseconds;
+    if (totalGapMs <= 0) return before.value;
+    final progressMs = d.difference(before.key).inMilliseconds;
+    final progress = progressMs / totalGapMs;
+    return before.value + (after.value - before.value) * progress;
+  }
+
+  Future<void> _ensureIntradayLoaded() async {
+    if (_yahooIntraday.isNotEmpty)
+      return; // déjà chargé, on ne refait pas les appels
+
+    setState(() => _isLoadingIntraday = true);
+
+    final futures = <Future>[];
+    for (var name in _yahooHistories.keys) {
+      futures.add(
+        PriceService.fetchYahooIntraday(
+          name,
+          isin: _instrumentIsins[name],
+        ).then((hist) {
+          if (hist.isNotEmpty) _yahooIntraday[name] = hist;
+        }),
+      );
+    }
+    await Future.wait(futures);
+
+    if (mounted) setState(() => _isLoadingIntraday = false);
+  }
+
+Future<double> _getCurrentPortfolioValue() async {
+  try {
+    // On utilise exactement la même vue SQL que PositionsScreen
+    final viewData = await supabase.from('portfolio_view').select('*');
+
+    double totalValue = 0.0;
+
+    for (var row in viewData) {
+      final String name = row['name'].toString().toLowerCase();
+
+      // Même exclusion que dans PositionsScreen :
+      // on ne compte pas les liquidités / cash
+      if (name.contains('liquidit') || name.contains('cash')) {
+        continue;
+      }
+
+      final double quantity = (row['quantity'] ?? 0).toDouble();
+      final double pru = (row['pru'] ?? 0).toDouble();
+
+      if (quantity.isNaN || pru.isNaN) {
+        continue;
+      }
+
+      // Même logique que PositionsScreen :
+      // on récupère le prix actuel
+      final double? livePrice = await PriceService.fetchLivePrice(
+        row['name'],
+        row['isin'] ?? '',
+        row['id'],
+      );
+
+      if (livePrice != null && !livePrice.isNaN) {
+        totalValue += livePrice * quantity;
+      } else {
+        // Si aucun prix actuel n'est disponible,
+        // on utilise le PRU comme valeur de secours.
+        totalValue += pru * quantity;
+      }
+    }
+
+    return totalValue;
+  } catch (e) {
+    print("Erreur calcul valeur actuelle Performance: $e");
+    return 0.0;
+  }
+}
+
+
   void _calculateChart() {
     if (_allTransactions.isEmpty) return;
 
@@ -1616,9 +1840,15 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
     }
 
-    // ---- Historique de prix trié + pointeurs pour le forward-fill ----
+    // ---- Historique de prix trié ----
+    // Pour "1S", on utilise l'intraday (plusieurs points par jour) si disponible.
+    final Map<String, Map<String, double>> histSource =
+        (_selectedPeriod == '1S' && _yahooIntraday.isNotEmpty)
+        ? _yahooIntraday
+        : _yahooHistories;
+
     Map<String, List<MapEntry<DateTime, double>>> sortedHistories = {};
-    _yahooHistories.forEach((name, hist) {
+    histSource.forEach((name, hist) {
       final entries =
           hist.entries
               .map((e) => MapEntry(DateTime.parse(e.key), e.value))
@@ -1626,8 +1856,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             ..sort((a, b) => a.key.compareTo(b.key));
       sortedHistories[name] = entries;
     });
-    Map<String, int> historyPointer = {};
-    Map<String, double> lastKnownPrice = {};
 
     List<FlSpot> spotsValue = [];
     List<FlSpot> spotsPercent = [];
@@ -1662,58 +1890,74 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         benchAferInfo == null) {
       benchName = null;
     }
-
-    int benchHistoryPointer = 0;
-    double? benchLastKnownPrice;
     double? benchStartPrice;
+
+    List<Map<String, dynamic>> sortedTx = List<Map<String, dynamic>>.from(
+      filteredTx,
+    )..sort((a, b) => a['date'].toString().compareTo(b['date'].toString()));
+
+    Map<String, Map<String, double>> instStats = {};
+    double cumulativeRealizedGains = 0.0;
+    int txPointer = 0;
+
+    final Duration chartStep =
+        (_selectedPeriod == '1S' && _yahooIntraday.isNotEmpty)
+        ? const Duration(hours: 1)
+        : const Duration(days: 1);
 
     for (
       DateTime d = startDate;
       d.isBefore(endDate) || d.isAtSameMomentAs(endDate);
-      d = d.add(const Duration(days: 1))
+      d = d.add(chartStep)
     ) {
-      String currentDateStr = d.toIso8601String().split('T')[0];
+      String currentDateStr = chartStep.inHours < 24
+          ? d.toIso8601String().substring(0, 16).replaceFirst('T', ' ')
+          : d.toIso8601String().split('T')[0];
 
-      Map<String, Map<String, double>> instStats = {};
-      double dailyRealizedGains = 0.0;
-
-      for (var tx in filteredTx) {
+      while (txPointer < sortedTx.length) {
+        final tx = sortedTx[txPointer];
         DateTime txDate = DateTime.parse(tx['date'].toString().split('T')[0]);
-        if (txDate.isAfter(d)) continue;
+        if (txDate.isAfter(d)) break;
 
-        if (tx['instruments'] == null) continue;
-        String instName = tx['instruments']['name'];
-        String type = tx['transaction_type'];
-        double q = (tx['quantity'] ?? 0).toDouble();
-        double p = (tx['unit_price'] ?? 0).toDouble();
+        if (tx['instruments'] != null) {
+          String instName = tx['instruments']['name'];
+          String type = tx['transaction_type'];
+          double q = (tx['quantity'] ?? 0).toDouble();
+          double p = (tx['unit_price'] ?? 0).toDouble();
 
-        if (!instStats.containsKey(instName)) {
-          instStats[instName] = {'qty': 0.0, 'boughtQty': 0.0, 'invested': 0.0};
+          if (!instStats.containsKey(instName)) {
+            instStats[instName] = {
+              'qty': 0.0,
+              'boughtQty': 0.0,
+              'invested': 0.0,
+            };
+          }
+
+          if (type == 'Buy' || type == 'Deposit') {
+            instStats[instName]!['qty'] = instStats[instName]!['qty']! + q;
+            instStats[instName]!['boughtQty'] =
+                instStats[instName]!['boughtQty']! + q;
+            instStats[instName]!['invested'] =
+                instStats[instName]!['invested']! + (q * p);
+          } else if (type == 'Sell') {
+            double currentPru = instStats[instName]!['boughtQty']! > 0.001
+                ? instStats[instName]!['invested']! /
+                      instStats[instName]!['boughtQty']!
+                : 0.0;
+            cumulativeRealizedGains += q * (p - currentPru);
+            instStats[instName]!['qty'] = instStats[instName]!['qty']! - q;
+            instStats[instName]!['boughtQty'] =
+                instStats[instName]!['boughtQty']! - q;
+            instStats[instName]!['invested'] =
+                instStats[instName]!['invested']! - (q * currentPru);
+          } else if (type == 'Dividend') {
+            cumulativeRealizedGains += (q * p);
+          }
         }
-
-        if (type == 'Buy' || type == 'Deposit') {
-          instStats[instName]!['qty'] = instStats[instName]!['qty']! + q;
-          instStats[instName]!['boughtQty'] =
-              instStats[instName]!['boughtQty']! + q;
-          instStats[instName]!['invested'] =
-              instStats[instName]!['invested']! + (q * p);
-        } else if (type == 'Sell') {
-          double currentPru = instStats[instName]!['boughtQty']! > 0.001
-              ? instStats[instName]!['invested']! /
-                    instStats[instName]!['boughtQty']!
-              : 0.0;
-          dailyRealizedGains += q * (p - currentPru);
-          instStats[instName]!['qty'] = instStats[instName]!['qty']! - q;
-          instStats[instName]!['boughtQty'] =
-              instStats[instName]!['boughtQty']! - q;
-          instStats[instName]!['invested'] =
-              instStats[instName]!['invested']! - (q * currentPru);
-        } else if (type == 'Dividend') {
-          dailyRealizedGains += (q * p);
-        }
+        txPointer++;
       }
 
-      double dailyPortfolioValue = dailyRealizedGains;
+      double dailyPortfolioValue = cumulativeRealizedGains;
       double dailyInvestedCapital = 0.0;
 
       instStats.forEach((instName, stats) {
@@ -1735,15 +1979,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         double price = pru;
 
         if (sortedHistories.containsKey(instName)) {
-          final hist = sortedHistories[instName]!;
-          int ptr = historyPointer[instName] ?? 0;
-          while (ptr < hist.length && !hist[ptr].key.isAfter(d)) {
-            lastKnownPrice[instName] = hist[ptr].value;
-            ptr++;
-          }
-          historyPointer[instName] = ptr;
-          // Forward-fill : on garde le dernier prix RÉELLEMENT connu.
-          price = lastKnownPrice[instName] ?? pru;
+          price = _interpolatedPrice(sortedHistories[instName]!, d, pru);
         } else {
           var aferInfo = _aferData[instName];
           if (aferInfo != null) {
@@ -1774,14 +2010,11 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         double benchPrice;
 
         if (benchSortedHist != null && benchSortedHist.isNotEmpty) {
-          while (benchHistoryPointer < benchSortedHist.length &&
-              !benchSortedHist[benchHistoryPointer].key.isAfter(d)) {
-            benchLastKnownPrice = benchSortedHist[benchHistoryPointer].value;
-            benchHistoryPointer++;
-          }
-          // Avant la première cotation connue, on utilise la première
-          // valeur disponible pour ne pas fausser le point de départ.
-          benchPrice = benchLastKnownPrice ?? benchSortedHist.first.value;
+          benchPrice = _interpolatedPrice(
+            benchSortedHist,
+            d,
+            benchSortedHist.first.value,
+          );
         } else {
           // Cas AFER : interpolation linéaire PRU global -> dernier prix connu.
           double globalPru = benchAferInfo!['pru'];
@@ -1847,15 +2080,23 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
     }
 
-    setState(() {
-      _totalDividends = divs;
-      _currentPortfolioValue = lastValue.isNaN ? 0.0 : lastValue;
-      _chartDataValue = spotsValue;
-      _chartDataPercent = spotsPercent;
-      _chartDataBenchmark = spotsBenchmark;
-      _periodPerformanceAbs = periodAbs;
-      _periodPerformancePct = periodPct;
-    });
+
+setState(() {
+  _totalDividends = divs;
+
+  // IMPORTANT :
+  // Ne pas utiliser lastValue ici.
+  // _currentPortfolioValue est maintenant calculé
+  // séparément avec portfolio_view + prix live,
+  // comme dans PositionsScreen.
+
+  _chartDataValue = spotsValue;
+  _chartDataPercent = spotsPercent;
+  _chartDataBenchmark = spotsBenchmark;
+  _periodPerformanceAbs = periodAbs;
+  _periodPerformancePct = periodPct;
+});
+
   }
 
   Future<void> _calculatePieData() async {
@@ -1896,7 +2137,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       } else if (type == 'Sell') {
         double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
             ? tempPositions[name]!['totalInvested'] /
-                tempPositions[name]!['totalBoughtQty']
+                  tempPositions[name]!['totalBoughtQty']
             : 0.0;
         tempPositions[name]!['quantity'] -= qty;
         tempPositions[name]!['totalBoughtQty'] -= qty;
@@ -1940,8 +2181,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     for (int i = 0; i < slices.length; i++) {
       slices[i]['color'] = _pieColors[i % _pieColors.length];
-      slices[i]['percent'] =
-          total > 0.001 ? (slices[i]['value'] / total) * 100 : 0.0;
+      slices[i]['percent'] = total > 0.001
+          ? (slices[i]['value'] / total) * 100
+          : 0.0;
     }
 
     if (mounted) {
@@ -1975,261 +2217,275 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : SingleChildScrollView(
               child: Column(
-              children: [
-                Container(
-                  color: Colors.black,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      isExpanded: true,
-                      dropdownColor: const Color(0xFF1C1C1E),
-                      value: _selectedAccountId,
-                      icon: const Icon(
-                        Icons.keyboard_arrow_down,
-                        color: Colors.white,
-                      ),
-                      items: _accountsList.map((acc) {
-                        return DropdownMenuItem<String>(
-                          value: acc['id'].toString(),
-                          child: Text(
-                            acc['name'],
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        setState(() => _selectedAccountId = value);
-                        _calculateChart();
-                        _calculatePieData();
-                      },
+                children: [
+                  Container(
+                    color: Colors.black,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
                     ),
-                  ),
-                ),
-                Container(
-                  color: Colors.black,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 0,
-                  ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      isExpanded: true,
-                      dropdownColor: const Color(0xFF1C1C1E),
-                      value: _selectedBenchmarkId,
-                      icon: const Icon(
-                        Icons.compare_arrows,
-                        color: Colors.white,
-                      ),
-                      items: _benchmarkList.map((inst) {
-                        return DropdownMenuItem<String>(
-                          value: inst['id'].toString(),
-                          child: Text(
-                            inst['name'],
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        setState(() => _selectedBenchmarkId = value);
-                        _calculateChart();
-                      },
-                    ),
-                  ),
-                ),
-                Container(
-                  width: double.infinity,
-                  color: const Color.fromARGB(255, 30, 30, 30),
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    children: [
-                      Text(
-                        "${_currentPortfolioValue.toStringAsFixed(2)} €",
-                        style: const TextStyle(
-                          fontSize: 36,
-                          fontWeight: FontWeight.bold,
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        dropdownColor: const Color(0xFF1C1C1E),
+                        value: _selectedAccountId,
+                        icon: const Icon(
+                          Icons.keyboard_arrow_down,
                           color: Colors.white,
                         ),
+                        items: _accountsList.map((acc) {
+                          return DropdownMenuItem<String>(
+                            value: acc['id'].toString(),
+                            child: Text(
+                              acc['name'],
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          setState(() => _selectedAccountId = value);
+                          _calculateChart();
+                          _calculatePieData();
+                        },
                       ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            _periodPerformanceAbs >= 0
-                                ? Icons.arrow_upward
-                                : Icons.arrow_downward,
-                            color: _periodPerformanceAbs >= 0
-                                ? Colors.greenAccent
-                                : Colors.redAccent,
-                            size: 20,
+                    ),
+                  ),
+                  Container(
+                    color: Colors.black,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 0,
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        dropdownColor: const Color(0xFF1C1C1E),
+                        value: _selectedBenchmarkId,
+                        icon: const Icon(
+                          Icons.compare_arrows,
+                          color: Colors.white,
+                        ),
+                        items: _benchmarkList.map((inst) {
+                          return DropdownMenuItem<String>(
+                            value: inst['id'].toString(),
+                            child: Text(
+                              inst['name'],
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          setState(() => _selectedBenchmarkId = value);
+                          _calculateChart();
+                        },
+                      ),
+                    ),
+                  ),
+                  Container(
+                    width: double.infinity,
+                    color: const Color.fromARGB(255, 30, 30, 30),
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      children: [
+                        Text(
+                          "${_currentPortfolioValue.toStringAsFixed(2).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ').replaceFirst('.', ',')} €",
+                          style: const TextStyle(
+                            fontSize: 36,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
-                          Text(
-                            "${_periodPerformanceAbs >= 0 ? '+' : ''}${_periodPerformanceAbs.toStringAsFixed(2)} € (${_periodPerformancePct >= 0 ? '+' : ''}${_periodPerformancePct.toStringAsFixed(2)}%)",
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              _periodPerformanceAbs >= 0
+                                  ? Icons.arrow_upward
+                                  : Icons.arrow_downward,
                               color: _periodPerformanceAbs >= 0
                                   ? Colors.greenAccent
                                   : Colors.redAccent,
+                              size: 20,
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          GestureDetector(
-                            onTap: () => setState(() => _showPercent = false),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 8,
+                            Text(
+                              "${_periodPerformanceAbs >= 0 ? '+' : ''}${_periodPerformanceAbs.toStringAsFixed(2)} € (${_periodPerformancePct >= 0 ? '+' : ''}${_periodPerformancePct.toStringAsFixed(2)}%)",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                                color: _periodPerformanceAbs >= 0
+                                    ? Colors.greenAccent
+                                    : Colors.redAccent,
                               ),
-                              decoration: BoxDecoration(
-                                color: !_showPercent
-                                    ? Colors.white30
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.white30),
-                              ),
-                              child: Text(
-                                "Valeur (€)",
-                                style: TextStyle(
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            GestureDetector(
+                              onTap: () => setState(() => _showPercent = false),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
                                   color: !_showPercent
-                                      ? Colors.white
-                                      : Colors.white30,
-                                  fontWeight: FontWeight.bold,
+                                      ? Colors.white30
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Colors.white30),
+                                ),
+                                child: Text(
+                                  "Valeur (€)",
+                                  style: TextStyle(
+                                    color: !_showPercent
+                                        ? Colors.white
+                                        : Colors.white30,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          GestureDetector(
-                            onTap: () => setState(() => _showPercent = true),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 20,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: _showPercent
-                                    ? Colors.white30
-                                    : Colors.transparent,
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(color: Colors.white30),
-                              ),
-                              child: Text(
-                                "Profit (%)",
-                                style: TextStyle(
+                            const SizedBox(width: 10),
+                            GestureDetector(
+                              onTap: () => setState(() => _showPercent = true),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
                                   color: _showPercent
-                                      ? Colors.white
-                                      : Colors.white30,
-                                  fontWeight: FontWeight.bold,
+                                      ? Colors.white30
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Colors.white30),
+                                ),
+                                child: Text(
+                                  "Profit (%)",
+                                  style: TextStyle(
+                                    color: _showPercent
+                                        ? Colors.white
+                                        : Colors.white30,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
                             ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          "Dividendes encaissés : ${_totalDividends.toStringAsFixed(2)} €",
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            "Dividendes encaissés : ${_totalDividends.toStringAsFixed(2)} €",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  height: 300,
-                  child: Padding(
-                    padding: const EdgeInsets.only(
-                      right: 20,
-                      left: 10,
-                      bottom: 20,
+                      ],
                     ),
-                    child: activeChartData.isEmpty
-                        ? const Center(
-                            child: Text(
-                              "Pas de données sur cette période",
-                              style: TextStyle(color: Colors.white54),
-                            ),
-                          )
-                        : LineChart(
-                            LineChartData(
-                              gridData: FlGridData(
-                                show: true,
-                                drawVerticalLine: false,
-                                getDrawingHorizontalLine: (value) => FlLine(
-                                  color: Colors.white10,
-                                  strokeWidth: 1,
-                                ),
+                  ),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    height: 300,
+                    child: Padding(
+                      padding: const EdgeInsets.only(
+                        right: 20,
+                        left: 10,
+                        bottom: 20,
+                      ),
+                      child: activeChartData.isEmpty
+                          ? const Center(
+                              child: Text(
+                                "Pas de données sur cette période",
+                                style: TextStyle(color: Colors.white54),
                               ),
-                              titlesData: FlTitlesData(
-                                show: true,
-                                rightTitles: const AxisTitles(
-                                  sideTitles: SideTitles(showTitles: false),
+                            )
+                          : LineChart(
+                              LineChartData(
+                                gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  getDrawingHorizontalLine: (value) => FlLine(
+                                    color: Colors.white10,
+                                    strokeWidth: 1,
+                                  ),
                                 ),
-                                topTitles: const AxisTitles(
-                                  sideTitles: SideTitles(showTitles: false),
-                                ),
-                                bottomTitles: AxisTitles(
-                                  sideTitles: SideTitles(
-                                    showTitles: true,
-                                    reservedSize: 30,
-                                    interval:
-                                        (activeChartData.length / 5)
-                                                .ceilToDouble() ==
-                                            0
-                                        ? 1
-                                        : (activeChartData.length / 5)
-                                              .ceilToDouble(),
-                                    getTitlesWidget: (value, meta) {
-                                      int index = value.toInt();
-                                      if (index >= 0 &&
-                                          index < _chartDates.length) {
-                                        DateTime d = DateTime.parse(
-                                          _chartDates[index],
-                                        );
-                                        String day = d.day.toString().padLeft(
-                                          2,
-                                          '0',
-                                        );
-                                        String month = d.month
-                                            .toString()
-                                            .padLeft(2, '0');
+                                titlesData: FlTitlesData(
+                                  show: true,
+                                  rightTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false),
+                                  ),
+                                  topTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false),
+                                  ),
+                                  bottomTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 30,
+                                      interval:
+                                          (activeChartData.length / 5)
+                                                  .ceilToDouble() ==
+                                              0
+                                          ? 1
+                                          : (activeChartData.length / 5)
+                                                .ceilToDouble(),
+                                      getTitlesWidget: (value, meta) {
+                                        int index = value.toInt();
+                                        if (index >= 0 &&
+                                            index < _chartDates.length) {
+                                          DateTime d = DateTime.parse(
+                                            _chartDates[index],
+                                          );
+                                          String day = d.day.toString().padLeft(
+                                            2,
+                                            '0',
+                                          );
+                                          String month = d.month
+                                              .toString()
+                                              .padLeft(2, '0');
 
-                                        if (_selectedPeriod == 'ALL' ||
-                                            _selectedPeriod == '1A') {
+                                          if (_selectedPeriod == 'ALL' ||
+                                              _selectedPeriod == '1A') {
+                                            return Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 8.0,
+                                              ),
+                                              child: Text(
+                                                '$month/${d.year.toString().substring(2)}',
+                                                style: const TextStyle(
+                                                  color: Colors.white54,
+                                                  fontSize: 11,
+                                                ),
+                                              ),
+                                            );
+                                          }
+
                                           return Padding(
                                             padding: const EdgeInsets.only(
                                               top: 8.0,
                                             ),
                                             child: Text(
-                                              '$month/${d.year.toString().substring(2)}',
+                                              '$day/$month',
                                               style: const TextStyle(
                                                 color: Colors.white54,
                                                 fontSize: 11,
@@ -2237,150 +2493,141 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                             ),
                                           );
                                         }
-
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 8.0,
-                                          ),
-                                          child: Text(
-                                            '$day/$month',
+                                        return const Text('');
+                                      },
+                                    ),
+                                  ),
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 50,
+                                      getTitlesWidget: (value, meta) {
+                                        if (_showPercent) {
+                                          return Text(
+                                            '${value.toInt()}%',
                                             style: const TextStyle(
                                               color: Colors.white54,
                                               fontSize: 11,
                                             ),
-                                          ),
-                                        );
-                                      }
-                                      return const Text('');
-                                    },
+                                          );
+                                        } else {
+                                          return Text(
+                                            '${value.toInt()} €',
+                                            style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 11,
+                                            ),
+                                          );
+                                        }
+                                      },
+                                    ),
                                   ),
                                 ),
-                                leftTitles: AxisTitles(
-                                  sideTitles: SideTitles(
-                                    showTitles: true,
-                                    reservedSize: 50,
-                                    getTitlesWidget: (value, meta) {
-                                      if (_showPercent) {
-                                        return Text(
-                                          '${value.toInt()}%',
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 11,
-                                          ),
-                                        );
-                                      } else {
-                                        return Text(
-                                          '${value.toInt()} €',
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 11,
-                                          ),
-                                        );
-                                      }
-                                    },
-                                  ),
-                                ),
-                              ),
-                              borderData: FlBorderData(show: false),
-                              lineTouchData: LineTouchData(
-                                touchTooltipData: LineTouchTooltipData(
-                                  getTooltipItems: (touchedSpots) {
-                                    return touchedSpots.map((spot) {
-                                      int index = spot.x.toInt();
-                                      String date = index < _chartDates.length
-                                          ? _chartDates[index]
-                                          : "";
-                                      String valStr = _showPercent
-                                          ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
-                                          : "${spot.y.toStringAsFixed(2)} €";
+                                borderData: FlBorderData(show: false),
+                                lineTouchData: LineTouchData(
+                                  touchTooltipData: LineTouchTooltipData(
+                                    getTooltipItems: (touchedSpots) {
+                                      return touchedSpots.map((spot) {
+                                        int index = spot.x.toInt();
+                                        String date = index < _chartDates.length
+                                            ? _chartDates[index]
+                                            : "";
+                                        String valStr = _showPercent
+                                            ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
+                                            : "${spot.y.toStringAsFixed(2)} €";
 
-                                      return LineTooltipItem(
-                                        "$date\n$valStr",
-                                        const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      );
-                                    }).toList();
-                                  },
-                                ),
-                              ),
-                              lineBarsData: [
-                                LineChartBarData(
-                                  spots: activeChartData,
-                                  isCurved: true,
-                                  color: _periodPerformanceAbs >= 0
-                                      ? Colors.greenAccent
-                                      : Colors.redAccent,
-                                  barWidth: 2,
-                                  isStrokeCapRound: true,
-                                  dotData: const FlDotData(show: false),
-                                  belowBarData: BarAreaData(
-                                    show: true,
-                                    color:
-                                        (_periodPerformanceAbs >= 0
-                                                ? Colors.greenAccent
-                                                : Colors.redAccent)
-                                            .withOpacity(0.1),
+                                        return LineTooltipItem(
+                                          "$date\n$valStr",
+                                          const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        );
+                                      }).toList();
+                                    },
                                   ),
                                 ),
-                                if (_showPercent &&
-                                    _chartDataBenchmark.isNotEmpty)
+                                lineBarsData: [
                                   LineChartBarData(
-                                    spots: _chartDataBenchmark,
+                                    spots: activeChartData,
                                     isCurved: true,
-                                    color: Colors.purpleAccent,
+                                    color: _periodPerformanceAbs >= 0
+                                        ? Colors.greenAccent
+                                        : Colors.redAccent,
                                     barWidth: 2,
                                     isStrokeCapRound: true,
                                     dotData: const FlDotData(show: false),
-                                    belowBarData: BarAreaData(show: false),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      color:
+                                          (_periodPerformanceAbs >= 0
+                                                  ? Colors.greenAccent
+                                                  : Colors.redAccent)
+                                              .withOpacity(0.1),
+                                    ),
                                   ),
-                              ],
+                                  if (_showPercent &&
+                                      _chartDataBenchmark.isNotEmpty)
+                                    LineChartBarData(
+                                      spots: _chartDataBenchmark,
+                                      isCurved: true,
+                                      color: Colors.purpleAccent,
+                                      barWidth: 2,
+                                      isStrokeCapRound: true,
+                                      dotData: const FlDotData(show: false),
+                                      belowBarData: BarAreaData(show: false),
+                                    ),
+                                ],
+                              ),
+                            ),
+                    ),
+                  ),
+                  Container(
+                    color: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: _periods.map((period) {
+                        final isSelected = _selectedPeriod == period;
+                        return GestureDetector(
+                          onTap: () async {
+                            setState(() => _selectedPeriod = period);
+                            if (period == '1S') {
+                              await _ensureIntradayLoaded();
+                            }
+                            _calculateChart();
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? const Color(0xFF333333)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            child: Text(
+                              period,
+                              style: TextStyle(
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.white54,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
+                        );
+                      }).toList(),
+                    ),
                   ),
-                ),
-                Container(
-                  color: Colors.black,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: _periods.map((period) {
-                      final isSelected = _selectedPeriod == period;
-                      return GestureDetector(
-                        onTap: () {
-                          setState(() => _selectedPeriod = period);
-                          _calculateChart();
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFF333333)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(15),
-                          ),
-                          child: Text(
-                            period,
-                            style: TextStyle(
-                              color: isSelected ? Colors.white : Colors.white54,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _buildPieChartSection(),
-                const SizedBox(height: 24),
-              ],
-            ),
+                  const SizedBox(height: 24),
+                  _buildPieChartSection(),
+                  const SizedBox(height: 24),
+                ],
+              ),
             ),
     );
   }
@@ -2389,9 +2636,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     if (_isPieLoading) {
       return const Padding(
         padding: EdgeInsets.all(30),
-        child: Center(
-          child: CircularProgressIndicator(color: Colors.white),
-        ),
+        child: Center(child: CircularProgressIndicator(color: Colors.white)),
       );
     }
 
@@ -2431,7 +2676,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                   return PieChartSectionData(
                     color: slice['color'] as Color,
                     value: slice['value'] as double,
-                    title: "${(slice['percent'] as double).toStringAsFixed(0)}%",
+                    title:
+                        "${(slice['percent'] as double).toStringAsFixed(0)}%",
                     radius: 60,
                     titleStyle: const TextStyle(
                       fontSize: 12,
@@ -2461,18 +2707,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                   Expanded(
                     child: Text(
                       slice['name'],
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
-                      ),
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
                     ),
                   ),
                   Text(
                     "${(slice['value'] as double).toStringAsFixed(2)} €",
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontSize: 13,
-                    ),
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
                   ),
                   const SizedBox(width: 10),
                   Text(
@@ -2619,8 +2859,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
             .limit(1);
 
         if (alerts.isNotEmpty) {
-          _alertThresholdLine =
-              (alerts.first['threshold_price'] as num).toDouble();
+          _alertThresholdLine = (alerts.first['threshold_price'] as num)
+              .toDouble();
         }
       } catch (e) {
         print("Erreur récupération alerte: $e");
@@ -2676,183 +2916,204 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     );
 
     // 1. Déclare tes contrôleurs et tes variables d'état pour les comptes en haut (dans ton StatefulWidget)
-final nameController = TextEditingController(text: widget.instrument['name'] ?? '');
-final isinController = TextEditingController(text: widget.instrument['ticker_isin'] ?? '');
+    final nameController = TextEditingController(
+      text: widget.instrument['name'] ?? '',
+    );
+    final isinController = TextEditingController(
+      text: widget.instrument['ticker_isin'] ?? '',
+    );
 
-// Variables pour les comptes
-List<Map<String, dynamic>> dialogAccountsList = [];
-dynamic selectedAccountId = widget.instrument['account_id']; // ID du compte actuel de l'instrument
+    // Variables pour les comptes
+    List<Map<String, dynamic>> dialogAccountsList = [];
+    dynamic selectedAccountId =
+        widget.instrument['account_id']; // ID du compte actuel de l'instrument
 
-// 2. Avant d'ouvrir le dialogue (ou au début de ta fonction), charge la liste des comptes :
-try {
-  final accountsData = await Supabase.instance.client
-      .from('accounts')
-      .select('id, name')
-      .order('name');
-  dialogAccountsList = List<Map<String, dynamic>>.from(accountsData);
-} catch (e) {
-  // Gérer l'erreur si besoin
-}
+    // 2. Avant d'ouvrir le dialogue (ou au début de ta fonction), charge la liste des comptes :
+    try {
+      final accountsData = await Supabase.instance.client
+          .from('accounts')
+          .select('id, name')
+          .order('name');
+      dialogAccountsList = List<Map<String, dynamic>>.from(accountsData);
+    } catch (e) {
+      // Gérer l'erreur si besoin
+    }
 
-// 3. Affichage du dialogue :
-await showDialog(
-  context: context,
-  builder: (context) => StatefulBuilder(
-    builder: (context, setDialogState) => AlertDialog(
-      backgroundColor: const Color(0xFF1C1C1E),
-      title: Text(
-        "Modifier : ${widget.instrument['name']}",
-        style: const TextStyle(color: Colors.white),
-      ),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // --- Champ Nom ---
-            TextField(
-              controller: nameController,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Nom de l\'instrument',
-                labelStyle: TextStyle(color: Colors.white54),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white),
+    // 3. Affichage du dialogue :
+    await showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: Text(
+            "Modifier : ${widget.instrument['name']}",
+            style: const TextStyle(color: Colors.white),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // --- Champ Nom ---
+                TextField(
+                  controller: nameController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Nom de l\'instrument',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
+                const SizedBox(height: 16),
 
-            // --- Champ Ticker / ISIN ---
-            TextField(
-              controller: isinController,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Ticker / ISIN',
-                labelStyle: TextStyle(color: Colors.white54),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white),
+                // --- Champ Ticker / ISIN ---
+                TextField(
+                  controller: isinController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Ticker / ISIN',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
+                const SizedBox(height: 16),
 
-            // --- NOUVEAU : Champ Compte Associé ---
-            DropdownButtonFormField<dynamic>(
-              value: selectedAccountId,
-              dropdownColor: const Color(0xFF2C2C2E),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Compte associé',
-                labelStyle: TextStyle(color: Colors.white54),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white),
+                // --- NOUVEAU : Champ Compte Associé ---
+                DropdownButtonFormField<dynamic>(
+                  value: selectedAccountId,
+                  dropdownColor: const Color(0xFF2C2C2E),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Compte associé',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white),
+                    ),
+                  ),
+                  items: dialogAccountsList.map((acc) {
+                    return DropdownMenuItem(
+                      value: acc['id'],
+                      child: Text(
+                        acc['name'],
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: (value) =>
+                      setDialogState(() => selectedAccountId = value),
                 ),
-              ),
-              items: dialogAccountsList.map((acc) {
-                return DropdownMenuItem(
-                  value: acc['id'],
-                  child: Text(acc['name'], style: const TextStyle(color: Colors.white)),
-                );
-              }).toList(),
-              onChanged: (value) =>
-                  setDialogState(() => selectedAccountId = value),
-            ),
-            const SizedBox(height: 16),
+                const SizedBox(height: 16),
 
-            // --- Champ Catégorie ---
-            DropdownButtonFormField<String>(
-              value: selectedCategory,
-              dropdownColor: const Color(0xFF2C2C2E),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Catégorie',
-                labelStyle: TextStyle(color: Colors.white54),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white),
+                // --- Champ Catégorie ---
+                DropdownButtonFormField<String>(
+                  value: selectedCategory,
+                  dropdownColor: const Color(0xFF2C2C2E),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Catégorie',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white),
+                    ),
+                  ),
+                  items: kCategories
+                      .map(
+                        (c) => DropdownMenuItem(
+                          value: c,
+                          child: Text(
+                            c,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) =>
+                      setDialogState(() => selectedCategory = value),
                 ),
-              ),
-              items: kCategories
-                  .map((c) => DropdownMenuItem(value: c, child: Text(c, style: const TextStyle(color: Colors.white))))
-                  .toList(),
-              onChanged: (value) =>
-                  setDialogState(() => selectedCategory = value),
-            ),
-            const SizedBox(height: 16),
+                const SizedBox(height: 16),
 
-            // --- Champ Commentaire ---
-            TextField(
-              controller: commentController,
-              maxLines: 3,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Commentaire',
-                labelStyle: TextStyle(color: Colors.white54),
-                enabledBorder: UnderlineInputBorder(
-                  borderSide: BorderSide(color: Colors.white),
+                // --- Champ Commentaire ---
+                TextField(
+                  controller: commentController,
+                  maxLines: 3,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Commentaire',
+                    labelStyle: TextStyle(color: Colors.white54),
+                    enabledBorder: UnderlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.white),
+              child: const Text("Annuler"),
+            ),
+            TextButton(
+              onPressed: () async {
+                try {
+                  // Mise à jour de Supabase (avec le compte associé)
+                  await Supabase.instance.client
+                      .from('instruments')
+                      .update({
+                        'name': nameController.text.trim(),
+                        'ticker_isin': isinController.text.trim(),
+                        'category': selectedCategory,
+                        'comment': commentController.text.trim(),
+                      })
+                      .eq('id', widget.instrument['id']);
+
+                  // Mise à jour de l'état local
+                  setState(() {
+                    widget.instrument['name'] = nameController.text.trim();
+                    widget.instrument['ticker_isin'] = isinController.text
+                        .trim();
+                    widget.instrument['account_id'] = selectedAccountId;
+                    widget.instrument['category'] = selectedCategory;
+                    widget.instrument['comment'] = commentController.text
+                        .trim();
+                  });
+
+                  if (context.mounted) {
+                    Navigator.pop(context);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Instrument mis à jour !"),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text("Erreur: $e"),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
+                }
+              },
+              child: const Text(
+                "Enregistrer",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blueAccent,
                 ),
               ),
             ),
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          style: TextButton.styleFrom(foregroundColor: Colors.white),
-          child: const Text("Annuler"),
-        ),
-        TextButton(
-          onPressed: () async {
-            try {
-              // Mise à jour de Supabase (avec le compte associé)
-              await Supabase.instance.client
-                  .from('instruments')
-                  .update({
-                    'name': nameController.text.trim(),
-                    'ticker_isin': isinController.text.trim(),
-                    'category': selectedCategory,
-                    'comment': commentController.text.trim(),
-                  })
-                  .eq('id', widget.instrument['id']);
-
-              // Mise à jour de l'état local
-              setState(() {
-                widget.instrument['name'] = nameController.text.trim();
-                widget.instrument['ticker_isin'] = isinController.text.trim();
-                widget.instrument['account_id'] = selectedAccountId;
-                widget.instrument['category'] = selectedCategory;
-                widget.instrument['comment'] = commentController.text.trim();
-              });
-
-              if (context.mounted) {
-                Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("Instrument mis à jour !"),
-                    backgroundColor: Colors.green,
-                  ),
-                );
-              }
-            } catch (e) {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text("Erreur: $e"),
-                    backgroundColor: Colors.red,
-                  ),
-                );
-              }
-            }
-          },
-          child: const Text(
-            "Enregistrer",
-            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
-          ),
-        ),
-      ],
-    ),
-  ),
-);
+    );
   }
 
   @override
@@ -2871,10 +3132,13 @@ await showDialog(
       appBar: AppBar(
         title: Text(
           widget.instrument['name'],
-          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
         ),
         backgroundColor: Colors.black,
-        foregroundColor: Colors.white, 
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
             icon: const Icon(Icons.edit_note, color: Colors.white),
@@ -2928,9 +3192,7 @@ await showDialog(
         ],
       ),
       body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            )
+          ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -3228,6 +3490,7 @@ class PortfolioScreen extends StatefulWidget {
 class _PortfolioScreenState extends State<PortfolioScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
+  bool _isImporting = false;
   List<Map<String, dynamic>> _instruments = [];
   List<Map<String, dynamic>> _history = [];
   Map<String, double> _livePrices = {};
@@ -3239,6 +3502,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     super.initState();
     _loadPortfolioData();
   }
+
+
 
   Future<void> _showEditTransactionDialog(Map<String, dynamic> tx) async {
     final TextEditingController qtyController = TextEditingController(
@@ -3421,11 +3686,14 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
   Future<void> _loadPortfolioData() async {
     setState(() => _isLoading = true);
+    
     try {
+      // 1. On récupère toutes les données de Supabase
       final historyData = await supabase
           .from('transactions')
           .select('*, instruments(name, ticker_isin), accounts(name)')
           .order('date', ascending: false);
+          
       final instrumentsData = await supabase
           .from('instruments')
           .select('id, name, ticker_isin, category, comment')
@@ -3436,40 +3704,60 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           .select('id, name')
           .order('name');
 
+      // 2. Calcul rapide des quantités possédées
       Map<String, double> qtys = {};
       for (var tx in historyData) {
         if (tx['instruments'] == null) continue;
         String instName = tx['instruments']['name'];
         double qty = (tx['quantity'] ?? 0).toDouble();
         String type = tx['transaction_type'];
+        
         if (!qtys.containsKey(instName)) qtys[instName] = 0.0;
+        
         if (type == 'Buy' || type == 'Deposit') {
           qtys[instName] = qtys[instName]! + qty;
-        } else if (type == 'Sell')
+        } else if (type == 'Sell') {
           qtys[instName] = qtys[instName]! - qty;
-      }
-      _ownedQuantities = qtys;
-
-      Map<String, double> prices = {};
-      for (var inst in instrumentsData) {
-        double? livePrice = await PriceService.fetchLivePrice(
-          inst['name'],
-          inst['ticker_isin'] ?? '',
-          inst['id'],
-        );
-        if (livePrice != null) prices[inst['name']] = livePrice;
+        }
       }
 
+      // 3. MAGIE UX : On met à jour l'écran IMMÉDIATEMENT avec ce qu'on a.
+      // Cela débloque l'accès aux onglets Comptes et Historique instantanément.
       if (mounted) {
         setState(() {
           _history = List<Map<String, dynamic>>.from(historyData);
           _instruments = List<Map<String, dynamic>>.from(instrumentsData);
           _accountsList = List<Map<String, dynamic>>.from(accountsData);
-          _livePrices = prices;
-          _isLoading = false;
+          _ownedQuantities = qtys;
+          _isLoading = false; // On enlève la roue de chargement
         });
       }
+
+      // 4. On lance la récupération de tous les prix en parallèle et en arrière-plan
+      List<Future<void>> priceFutures = _instruments.map((inst) async {
+        try {
+          double? livePrice = await PriceService.fetchLivePrice(
+            inst['name'],
+            inst['ticker_isin'] ?? '',
+            inst['id'],
+          );
+          
+          // Dès qu'UN prix est trouvé, on l'ajoute au dictionnaire et on actualise l'UI
+          if (livePrice != null && mounted) {
+            setState(() {
+              _livePrices[inst['name']] = livePrice;
+            });
+          }
+        } catch (e) {
+          print("Erreur de prix pour ${inst['name']}: $e");
+        }
+      }).toList();
+
+      // On laisse tourner ces requêtes sans bloquer l'application
+      await Future.wait(priceFutures);
+
     } catch (e) {
+      print("Erreur Portfolio: $e");
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -3544,6 +3832,124 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       ),
     );
   }
+void _showCsvInstructionsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Format du fichier CSV'),
+          content: const SingleChildScrollView(
+            child: ListBody(
+              children: [
+                Text('Votre fichier CSV doit contenir 6 colonnes dans cet ordre exact :'),
+                SizedBox(height: 12),
+                Text('1. Date d\'achat (jj/mm/aaaa)'),
+                Text('2. Ticker ou ISIN'),
+                Text('3. Quantité'),
+                Text('4. Prix unitaire'),
+                Text('5. Frais de courtage'),
+                Text('6. Compte (PEA, CTO, etc.)'),
+                SizedBox(height: 12),
+                Text('⚠️ Les colonnes doivent être séparées par des virgules (,) et les décimales avec des points (ex: 30.50).', 
+                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Annuler'),
+              onPressed: () {
+                Navigator.of(context).pop(); // Ferme le popup
+              },
+            ),
+            ElevatedButton(
+              child: const Text('J\'ai compris, importer'),
+              onPressed: () {
+                Navigator.of(context).pop(); // Ferme le popup d'abord
+                _importCSV();                // Lance la sélection du fichier ensuite
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+Future<void> _importCSV() async {
+    setState(() { _isImporting = true; });
+
+    try {
+      fp.FilePickerResult? result = await fp.FilePicker.platform.pickFiles(
+        type: fp.FileType.custom,
+        allowedExtensions: ['csv'],
+        withData: true,
+      );
+
+      if (result != null && result.files.first.bytes != null) {
+        final csvString = utf8.decode(result.files.first.bytes!);
+
+        // Attention : met fieldDelimiter: ';' si ton CSV vient d'Excel en français
+        List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
+          fieldDelimiter: ',', 
+          eol: '\n',
+        ).convert(csvString);
+
+        if (rowsAsListOfValues.isEmpty) return;
+
+        if (rowsAsListOfValues.first[0].toString().toLowerCase().contains('date')) {
+          rowsAsListOfValues.removeAt(0);
+        }
+
+        List<Map<String, dynamic>> recordsToInsert = [];
+        final dateFormat = DateFormat('dd/MM/yyyy'); 
+
+        for (var row in rowsAsListOfValues) {
+          if (row.length < 6) continue; 
+
+          DateTime parsedDate = dateFormat.parse(row[0].toString().trim());
+
+          recordsToInsert.add({
+            'transaction_date': parsedDate.toIso8601String(),
+            'ticker_isin': row[1].toString().trim(),
+            'quantity': num.tryParse(row[2].toString()) ?? 0,
+            'unit_price': num.tryParse(row[3].toString()) ?? 0,
+            'brokerage_fees': num.tryParse(row[4].toString()) ?? 0,
+            'account_type': row[5].toString().trim(),
+          });
+        }
+
+        if (recordsToInsert.isNotEmpty) {
+          await Supabase.instance.client.from('transactions').insert(recordsToInsert);
+          
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Importation réussie !')),
+            );
+          }
+          
+          // TODO: Ici, appelle ta fonction qui récupère les transactions de Supabase 
+          // pour actualiser l'affichage de ton portefeuille
+          _refreshDonnees();
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur : $e')),
+        );
+      }
+    } finally {
+      setState(() { _isImporting = false; });
+    }
+  }
+
+  // Fonction fictive pour l'exemple : mets ici ton code pour recharger tes données
+  void _refreshDonnees() {
+    setState(() {
+      // Recharger les données depuis Supabase
+    });
+  }
+
 
   Future<void> _confirmDeleteAccount(Map<String, dynamic> account) async {
     bool confirm =
@@ -3638,6 +4044,21 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           ),
 
           actions: [
+
+            _isImporting
+        ? const Padding(
+            padding: EdgeInsets.all(16.0),
+            child: SizedBox(
+              width: 20, height: 20, 
+              child: CircularProgressIndicator(strokeWidth: 2)
+            ),
+          )
+        : IconButton(
+            icon: const Icon(Icons.upload_file),
+            tooltip: 'Importer un fichier CSV',
+            onPressed: () => _showCsvInstructionsDialog(context), // la fonction que tu as ajoutée
+          ),
+
             IconButton(
               icon: const Icon(Icons.logout),
               tooltip: 'Se déconnecter',
@@ -3671,10 +4092,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                           vertical: 3,
                         ),
                         child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 0,
-                            ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 0,
+                          ),
                           onTap: () => Navigator.push(
                             context,
                             MaterialPageRoute(
@@ -3736,10 +4157,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                 vertical: 3,
                               ),
                               child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 0,
-                            ),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 0,
+                                ),
                                 title: Text(
                                   acc['name'],
                                   style: const TextStyle(
@@ -3805,10 +4226,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                           vertical: 3,
                         ),
                         child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 16,
-                              vertical: 0,
-                            ),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 0,
+                          ),
                           onTap: () => _showEditTransactionDialog(tx),
                           title: Text(
                             tx['instruments']?['name'] ?? 'Inconnu',
@@ -3942,7 +4363,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
   Future<void> _submitTransaction() async {
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedInstrumentId == null || _selectedInstrumentId == 'ADD_NEW_INSTRUMENT') {
+    if (_selectedInstrumentId == null ||
+        _selectedInstrumentId == 'ADD_NEW_INSTRUMENT') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Veuillez sélectionner un instrument'),
@@ -4039,11 +4461,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         "Date : ${_selectedDate.toLocal().toString().split(' ')[0]}",
                         style: const TextStyle(color: Colors.white70),
                       ),
-                      trailing: const Icon(Icons.calendar_today, color: Colors.white70),
+                      trailing: const Icon(
+                        Icons.calendar_today,
+                        color: Colors.white70,
+                      ),
                       onTap: () => _selectDate(context),
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP COMPTE ---
                     DropdownButtonFormField<dynamic>(
                       value: _selectedAccountId,
@@ -4069,7 +4494,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         ..._accountsList.map((acc) {
                           return DropdownMenuItem(
                             value: acc['id'],
-                            child: Text(acc['name'], style: const TextStyle(color: Colors.white70)),
+                            child: Text(
+                              acc['name'],
+                              style: const TextStyle(color: Colors.white70),
+                            ),
                           );
                         }),
                       ],
@@ -4078,14 +4506,19 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                           // TODO: Remplacer par ta page de création de compte
                           await Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (context) => const AddAccountScreen()),
+                            MaterialPageRoute(
+                              builder: (context) => const AddAccountScreen(),
+                            ),
                           );
-                          
+
                           await _loadData();
-                          
-                          if (_selectedAccountId == 'ADD_NEW_ACCOUNT' || _selectedAccountId == null) {
+
+                          if (_selectedAccountId == 'ADD_NEW_ACCOUNT' ||
+                              _selectedAccountId == null) {
                             setState(() {
-                              _selectedAccountId = _accountsList.isNotEmpty ? _accountsList.first['id'] : null;
+                              _selectedAccountId = _accountsList.isNotEmpty
+                                  ? _accountsList.first['id']
+                                  : null;
                             });
                           }
                         } else {
@@ -4094,7 +4527,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP TYPE TRANSACTION ---
                     DropdownButtonFormField<String>(
                       value: _selectedType,
@@ -4107,19 +4540,23 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       items: _types.map((type) {
                         return DropdownMenuItem(
                           value: type,
-                          child: Text(type, style: const TextStyle(color: Colors.white70)),
+                          child: Text(
+                            type,
+                            style: const TextStyle(color: Colors.white70),
+                          ),
                         );
                       }).toList(),
-                      onChanged: (value) => setState(() => _selectedType = value!),
+                      onChanged: (value) =>
+                          setState(() => _selectedType = value!),
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP INSTRUMENT ---
                     DropdownButtonFormField<dynamic>(
                       value: _selectedInstrumentId,
                       dropdownColor: Colors.grey[900],
                       decoration: const InputDecoration(
-                        labelText: 'Instrument',
+                        labelText: 'Action / ETF / Crypto',
                         labelStyle: TextStyle(color: Colors.white70),
                         border: OutlineInputBorder(),
                       ),
@@ -4128,7 +4565,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         const DropdownMenuItem<dynamic>(
                           value: 'ADD_NEW_INSTRUMENT',
                           child: Text(
-                            '+ Ajouter un instrument',
+                            '+ Ajouter une action / ETF / Crypto',
                             style: TextStyle(
                               color: Colors.white70,
                               fontWeight: FontWeight.bold,
@@ -4139,7 +4576,10 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         ..._instrumentsList.map((inst) {
                           return DropdownMenuItem(
                             value: inst['id'],
-                            child: Text("${inst['name']}", style: const TextStyle(color: Colors.white70)),
+                            child: Text(
+                              "${inst['name']}",
+                              style: const TextStyle(color: Colors.white70),
+                            ),
                           );
                         }),
                       ],
@@ -4147,15 +4587,21 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                         if (value == 'ADD_NEW_INSTRUMENT') {
                           // TODO: Remplacer par ta page de création d'instrument
                           await Navigator.push(
-                           context,
-                           MaterialPageRoute(builder: (context) => const AddInstrumentScreen()),
-                         );
-                          
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => const AddInstrumentScreen(),
+                            ),
+                          );
+
                           await _loadData();
-                          
-                          if (_selectedInstrumentId == 'ADD_NEW_INSTRUMENT' || _selectedInstrumentId == null) {
+
+                          if (_selectedInstrumentId == 'ADD_NEW_INSTRUMENT' ||
+                              _selectedInstrumentId == null) {
                             setState(() {
-                              _selectedInstrumentId = _instrumentsList.isNotEmpty ? _instrumentsList.first['id'] : null;
+                              _selectedInstrumentId =
+                                  _instrumentsList.isNotEmpty
+                                  ? _instrumentsList.first['id']
+                                  : null;
                             });
                           }
                         } else {
@@ -4164,7 +4610,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       },
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP QUANTITÉ ---
                     TextFormField(
                       controller: _quantityController,
@@ -4182,7 +4628,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                           (val == null || val.isEmpty) ? 'Champ requis' : null,
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP PRIX ---
                     TextFormField(
                       controller: _priceController,
@@ -4200,7 +4646,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                           (val == null || val.isEmpty) ? 'Champ requis' : null,
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP FRAIS ---
                     TextFormField(
                       controller: _feesController,
@@ -4216,7 +4662,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                       ),
                     ),
                     const SizedBox(height: 24),
-                    
+
                     // --- BOUTON DE SOUMISSION ---
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(
@@ -4398,8 +4844,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
       appBar: AppBar(
         title: Text(
           widget.isWatchlist
-              ? 'Nouvel Instrument (Watchlist)'
-              : 'Nouvel Instrument',
+              ? 'Nouvelle action / ETF / Crypto (Watchlist)'
+              : 'Nouvelle action / ETF / Crypto',
         ),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
@@ -4447,9 +4893,15 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                   border: OutlineInputBorder(),
                 ),
                 items: kCategories
-                    .map((c) => DropdownMenuItem(
-                      value: c, 
-                      child: Text(c, style: const TextStyle(color: Colors.white))))
+                    .map(
+                      (c) => DropdownMenuItem(
+                        value: c,
+                        child: Text(
+                          c,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    )
                     .toList(),
                 onChanged: (value) => setState(() => _selectedCategory = value),
               ),
@@ -4476,7 +4928,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 onPressed: _isSubmitting ? null : _submitInstrument,
                 child: _isSubmitting
                     ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text('Ajouter l\'instrument'),
+                    : const Text('Ajouter l\'action / ETF / Crypto'),
               ),
             ],
           ),
