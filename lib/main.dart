@@ -3093,26 +3093,39 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   }
 
   Future<void> _showEditInstrumentDialog() async {
-    String? selectedCategory = widget.instrument['category'];
+        // On va chercher les vraies infos à jour directement dans la base,
+    // pour ne pas perdre l'ISIN, la catégorie ou le commentaire
+    Map<String, dynamic> instrumentData = widget.instrument;
+    try {
+      final freshData = await Supabase.instance.client
+          .from('instruments')
+          .select()
+          .eq('id', widget.instrument['id'])
+          .single();
+      instrumentData = freshData;
+    } catch (e) {
+            print('Erreur lors du rechargement de l\'instrument: $e');
+    }
+        String? selectedCategory = instrumentData['category'];
     if (selectedCategory != null && !kCategories.contains(selectedCategory)) {
       selectedCategory = null;
     }
     final TextEditingController commentController = TextEditingController(
-      text: widget.instrument['comment'] ?? '',
+      text: instrumentData['comment'] ?? '',
     );
 
     // 1. Déclare tes contrôleurs et tes variables d'état pour les comptes en haut (dans ton StatefulWidget)
     final nameController = TextEditingController(
-      text: widget.instrument['name'] ?? '',
+      text: instrumentData['name'] ?? '',
     );
     final isinController = TextEditingController(
-      text: widget.instrument['ticker_isin'] ?? '',
+      text: instrumentData['ticker_isin'] ?? '',
     );
 
     // Variables pour les comptes
     List<Map<String, dynamic>> dialogAccountsList = [];
     dynamic selectedAccountId =
-        widget.instrument['account_id']; // ID du compte actuel de l'instrument
+        instrumentData['account_id'];
 
     // 2. Avant d'ouvrir le dialogue (ou au début de ta fonction), charge la liste des comptes :
     try {
