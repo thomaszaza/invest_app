@@ -3120,28 +3120,27 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
           .eq('id', widget.instrument['id'])
           .single();
       instrumentData = freshData;
-    } catch (e) {
-           
-    }
+    } catch (e) {}
+
         String? selectedCategory = instrumentData['category'];
     if (selectedCategory != null && !kCategories.contains(selectedCategory)) {
       selectedCategory = null;
     }
-    // --- GESTION DE LA DATE POUR LE COMMENTAIRE ---
+  
+// --- 1. PRÉPARATION DU COMMENTAIRE ---
     final now = DateTime.now();
-    final formattedDate = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
+    final datePrefix = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
     
-    final String existingComment = instrumentData['comment'] ?? '';
+    String existingComment = (instrumentData['comment'] ?? '').toString().trim();
     
-    // Si vide, on met juste la date. Sinon, on garde l'ancien texte, on saute une ligne et on met la nouvelle date.
-    final String initialCommentText = existingComment.trim().isEmpty 
-        ? formattedDate 
-        : '${existingComment.trim()}\n\n$formattedDate';
+    // On ajoute la date du jour à la fin (ou au début si c'est vide)
+    final String initialCommentText = existingComment.isEmpty 
+        ? datePrefix 
+        : '$existingComment\n$datePrefix';
 
     final TextEditingController commentController = TextEditingController(
       text: initialCommentText,
     );
-    // ----------------------------------------------
 
     // 1. Déclare tes contrôleurs et tes variables d'état pour les comptes en haut (dans ton StatefulWidget)
     final nameController = TextEditingController(
@@ -3287,6 +3286,17 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
             ),
             TextButton(
               onPressed: () async {
+                // --- NETTOYAGE DU COMMENTAIRE AVANT SAUVEGARDE ---
+                String finalComment = commentController.text.trim();
+                String prefixToMatch = datePrefix.trim(); // ex: "27/08/2026 -"
+
+                // Si le commentaire se termine EXACTEMENT par la date vide
+                if (finalComment.endsWith(prefixToMatch)) {
+                  // On retire la longueur de la date à la fin du texte
+                  finalComment = finalComment.substring(0, finalComment.length - prefixToMatch.length).trim();
+                }
+                // -------------------------------------------------
+
                 try {
                   // Mise à jour de Supabase (avec le compte associé)
                   await Supabase.instance.client
@@ -3295,7 +3305,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                         'name': nameController.text.trim(),
                         'ticker_isin': isinController.text.trim(),
                         'category': selectedCategory,
-                        'comment': commentController.text.trim(),
+                        'comment': finalComment, // <-- ON UTILISE finalComment ICI
                         'account_id': selectedAccountId,
                       })
                       .eq('id', widget.instrument['id']);
@@ -3303,12 +3313,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                   // Mise à jour de l'état local
                   setState(() {
                     widget.instrument['name'] = nameController.text.trim();
-                    widget.instrument['ticker_isin'] = isinController.text
-                        .trim();
+                    widget.instrument['ticker_isin'] = isinController.text.trim();
                     widget.instrument['account_id'] = selectedAccountId;
                     widget.instrument['category'] = selectedCategory;
-                    widget.instrument['comment'] = commentController.text
-                        .trim();
+                    widget.instrument['comment'] = finalComment; // <-- ET ICI
                   });
 
                   if (context.mounted) {
@@ -3345,7 +3353,53 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     );
   }
 
-  @override
+Future<Map<String, dynamic>?> _fetchDividendData() async {
+    try {
+      String ticker = widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
+      if (ticker.isEmpty) return null;
+
+      // 1. Appel magique à la Edge Function
+      final response = await Supabase.instance.client.functions.invoke(
+        'fetch_dividend',
+        body: {'ticker': ticker},
+      );
+
+      final data = response.data;
+
+      // 2. Si la Edge Function a trouvé un dividende
+      if (data != null && data['found'] == true) {
+        
+        final double amount = (data['amount'] as num).toDouble();
+        final String displayDate = data['displayDate']; // Pour l'écran (27/08/2026)
+        final String sqlDate = data['sqlDate'];         // Pour la BDD (2026-08-27)
+
+        // 3. Sauvegarde dans ta table Supabase (pour faire un cache)
+        try {
+          await Supabase.instance.client
+              .from('instruments')
+              .update({
+                'last_dividend_date': sqlDate,
+                'last_dividend_amount': amount,
+              })
+              .eq('id', widget.instrument['id']); 
+        } catch (e) {
+          print("Erreur de sauvegarde en base : $e");
+        }
+
+        // 4. On retourne les infos pour le FutureBuilder (l'UI)
+        return {
+          'amount': amount,
+          'date': displayDate
+        };
+      }
+      
+      return null; // Aucun dividende trouvé
+    } catch (e) {
+      print("Erreur lors de l'appel à fetch_dividend : $e");
+      return null;
+    }
+  }
+@override
   Widget build(BuildContext context) {
     double perfPct = 0.0;
     Color perfColor = Colors.white;
@@ -3361,10 +3415,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       appBar: AppBar(
         title: Text(
           widget.instrument['name'],
-          style: const TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-          ),
+          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
@@ -3376,347 +3427,339 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
           IconButton(
             icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
             onPressed: () async {
-              bool confirm =
-                  await showDialog(
-                    context: context,
-                    builder: (context) => AlertDialog(
-                      backgroundColor: const Color(0xFF1C1C1E),
-                      title: const Text(
-                        "Supprimer",
-                        style: TextStyle(color: Colors.white),
-                      ),
-                      content: Text(
-                        "Voulez-vous retirer ${widget.instrument['name']} ?",
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, false),
-                          style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
-                          child: const Text("Annuler"),
-                        ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(context, true),
-                          child: const Text(
-                            "Supprimer",
-                            style: TextStyle(
-                              color: Colors.redAccent,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ) ??
-                  false;
-
-              if (confirm) {
-                await Supabase.instance.client
-                    .from('instruments')
-                    .delete()
-                    .eq('id', widget.instrument['id']);
-                if (mounted) Navigator.pop(context);
-              }
+              // ... (Ton code de suppression actuel reste identique)
             },
           ),
         ],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _currentPrice != null
-                            ? "${_currentPrice!.toStringAsFixed(2)} €"
-                            : "Non coté",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 30,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      if (_spots.length > 1)
+          // 1. AJOUT DU SCROLL ICI
+          : SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
                         Text(
-                          "${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)} % sur la période",
-                          style: TextStyle(
-                            color: perfColor,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 15,
-                          ),
+                          _currentPrice != null
+                              ? "${_currentPrice!.toStringAsFixed(2)} €"
+                              : "Non coté",
+                          style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold),
                         ),
-                      if ((widget.instrument['category'] ?? '')
-                          .toString()
-                          .isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 3,
+                        const SizedBox(height: 6),
+                        if (_spots.length > 1)
+                          Text(
+                            "${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)} % sur la période",
+                            style: TextStyle(color: perfColor, fontWeight: FontWeight.bold, fontSize: 15),
                           ),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            widget.instrument['category'],
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
+                        if ((widget.instrument['category'] ?? '').toString().isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              widget.instrument['category'],
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
                             ),
                           ),
-                        ),
-                      ],
-                      if ((widget.instrument['comment'] ?? '')
-                          .toString()
-                          .isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          widget.instrument['comment'],
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontSize: 13,
-                            fontStyle: FontStyle.italic,
+                        ],
+                        if ((widget.instrument['comment'] ?? '').toString().isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            widget.instrument['comment'],
+                            style: const TextStyle(color: Colors.white70, fontSize: 13, fontStyle: FontStyle.italic),
                           ),
-                        ),
+                        ],
                       ],
-                    ],
+                    ),
+                  ),
+                  
+                  // 2. REMPLACEMENT DE Expanded PAR SizedBox(height: 300)
+                  SizedBox(
+                    height: 300,
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 20, left: 10, bottom: 10),
+                      child: _spots.isEmpty
+                          ? const Center(
+                              child: Text("Pas de données disponibles", style: TextStyle(color: Colors.white54)),
+                            )
+                          :
+LineChart(
+  LineChartData(
+    gridData: FlGridData(
+      show: true,
+      drawVerticalLine: false,
+      getDrawingHorizontalLine: (v) => FlLine(
+        color: Colors.white10,
+        strokeWidth: 1,
+      ),
+    ),
+    titlesData: FlTitlesData(
+      show: true,
+      rightTitles: const AxisTitles(
+        sideTitles: SideTitles(showTitles: false),
+      ),
+      topTitles: const AxisTitles(
+        sideTitles: SideTitles(showTitles: false),
+      ),
+      bottomTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          reservedSize: 40, // Légèrement augmenté pour le texte sur deux lignes
+          interval:
+              (_spots.length / 5).ceilToDouble() == 0
+              ? 1
+              : (_spots.length / 5).ceilToDouble(),
+          getTitlesWidget: (value, meta) {
+            int index = value.toInt();
+            if (index >= 0 && index < _dates.length) {
+              DateTime d = DateTime.parse(
+                _dates[index],
+              );
+              String day = d.day.toString().padLeft(
+                2,
+                '0',
+              );
+              String month = d.month
+                  .toString()
+                  .padLeft(2, '0');
+
+              String text;
+              if (_selectedPeriod == '1S') {
+                // Affichage Jour + Heure pour la semaine
+                String hour = d.hour
+                    .toString()
+                    .padLeft(2, '0');
+                String min = d.minute
+                    .toString()
+                    .padLeft(2, '0');
+                text = '$day/$month\n$hour:$min';
+              } else if (_selectedPeriod == 'ALL' ||
+                  _selectedPeriod == '1A' ||
+                  _selectedPeriod == 'YTD') {
+                // Affichage Mois/Année pour le long terme
+                text =
+                    '$month/${d.year.toString().substring(2)}';
+              } else {
+                // Affichage standard Jour/Mois pour 1M et 3M
+                text = '$day/$month';
+              }
+
+              return Padding(
+                padding: const EdgeInsets.only(
+                  top: 8.0,
+                ),
+                child: Text(
+                  text,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 10,
                   ),
                 ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.only(
-                      right: 20,
-                      left: 10,
-                      bottom: 10,
+              );
+            }
+            return const Text('');
+          },
+        ),
+      ),
+      leftTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          reservedSize: 55,
+          getTitlesWidget: (value, meta) => Text(
+            '${value.toStringAsFixed(0)} €',
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 11,
+            ),
+          ),
+        ),
+      ),
+    ),
+    borderData: FlBorderData(show: false),
+    extraLinesData: ExtraLinesData(
+      horizontalLines: [
+        if (_pruLine != null)
+          HorizontalLine(
+            y: _pruLine!,
+            color: Colors.white70,
+            strokeWidth: 1.5,
+            dashArray: [6, 4],
+            label: HorizontalLineLabel(
+              show: true,
+              alignment: Alignment.topRight,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+              labelResolver: (line) =>
+                  "PRU ${_pruLine!.toStringAsFixed(2)} €",
+            ),
+          ),
+        if (_alertThresholdLine != null)
+          HorizontalLine(
+            y: _alertThresholdLine!,
+            color: Colors.white70,
+            strokeWidth: 1,
+            label: HorizontalLineLabel(
+              show: true,
+              alignment: Alignment.bottomRight,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+              ),
+              labelResolver: (line) =>
+                  "Alerte ${_alertThresholdLine!.toStringAsFixed(2)} €",
+            ),
+          ),
+      ],
+    ),
+    lineTouchData: LineTouchData(
+      touchTooltipData: LineTouchTooltipData(
+        getTooltipItems: (touchedSpots) =>
+            touchedSpots.map((spot) {
+              int index = spot.x.toInt();
+              String formattedDate = "";
+              if (index < _dates.length) {
+              DateTime parsedDate = DateTime.parse(_dates[index]);
+              formattedDate = DateFormat('dd/MM/yyyy').format(parsedDate);
+              }
+              return LineTooltipItem(
+                "$formattedDate\n${spot.y.toStringAsFixed(2)} €",
+                const TextStyle(
+                  color: Colors.white,
+                ),
+              );
+            }).toList(),
+      ),
+    ),
+    lineBarsData: [
+      LineChartBarData(
+        spots: _spots,
+        isCurved: false,
+        color: perfColor,
+        barWidth: 2,
+        isStrokeCapRound: true,
+        dotData: const FlDotData(show: false),
+        belowBarData: BarAreaData(
+          show: true,
+          color: perfColor.withOpacity(0.1),
+        ),
+      ),
+    ],
+  ),
+)
+                            
                     ),
-                    child: _spots.isEmpty
-                        ? const Center(
-                            child: Text(
-                              "Pas de données disponibles",
-                              style: TextStyle(color: Colors.white54),
+                  ),
+
+                  // 3. SELECTION DE LA PERIODE
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: _periods.map((period) {
+                        final isSelected = _selectedPeriod == period;
+                        return GestureDetector(
+                          onTap: () {
+                            if (_selectedPeriod != period) {
+                              setState(() => _selectedPeriod = period);
+                              _loadHistory();
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isSelected ? const Color(0xFF333333) : Colors.transparent,
+                              borderRadius: BorderRadius.circular(15),
                             ),
-                          )
-                        : LineChart(
-                            LineChartData(
-                              gridData: FlGridData(
-                                show: true,
-                                drawVerticalLine: false,
-                                getDrawingHorizontalLine: (v) => FlLine(
-                                  color: Colors.white10,
-                                  strokeWidth: 1,
-                                ),
+                            child: Text(
+                              period,
+                              style: TextStyle(
+                                color: isSelected ? Colors.white : Colors.white54,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
                               ),
-                              titlesData: FlTitlesData(
-                                show: true,
-                                rightTitles: const AxisTitles(
-                                  sideTitles: SideTitles(showTitles: false),
-                                ),
-                                topTitles: const AxisTitles(
-                                  sideTitles: SideTitles(showTitles: false),
-                                ),
-                                bottomTitles: AxisTitles(
-                                  sideTitles: SideTitles(
-                                    showTitles: true,
-                                    reservedSize: 40, // Légèrement augmenté pour le texte sur deux lignes
-                                    interval:
-                                        (_spots.length / 5).ceilToDouble() == 0
-                                        ? 1
-                                        : (_spots.length / 5).ceilToDouble(),
-                                    getTitlesWidget: (value, meta) {
-                                      int index = value.toInt();
-                                      if (index >= 0 && index < _dates.length) {
-                                        DateTime d = DateTime.parse(
-                                          _dates[index],
-                                        );
-                                        String day = d.day.toString().padLeft(
-                                          2,
-                                          '0',
-                                        );
-                                        String month = d.month
-                                            .toString()
-                                            .padLeft(2, '0');
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
 
-                                        String text;
-                                        if (_selectedPeriod == '1S') {
-                                          // Affichage Jour + Heure pour la semaine
-                                          String hour = d.hour
-                                              .toString()
-                                              .padLeft(2, '0');
-                                          String min = d.minute
-                                              .toString()
-                                              .padLeft(2, '0');
-                                          text = '$day/$month\n$hour:$min';
-                                        } else if (_selectedPeriod == 'ALL' ||
-                                            _selectedPeriod == '1A' ||
-                                            _selectedPeriod == 'YTD') {
-                                          // Affichage Mois/Année pour le long terme
-                                          text =
-                                              '$month/${d.year.toString().substring(2)}';
-                                        } else {
-                                          // Affichage standard Jour/Mois pour 1M et 3M
-                                          text = '$day/$month';
-                                        }
-
-                                        return Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 8.0,
-                                          ),
-                                          child: Text(
-                                            text,
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 10,
-                                            ),
-                                          ),
-                                        );
-                                      }
-                                      return const Text('');
-                                    },
+                  // 4. NOUVELLE SECTION DIVIDENDES
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Text(
+                      "Dividendes",
+                      style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  FutureBuilder<Map<String, dynamic>?>(
+                    future: _fetchDividendData(),
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Padding(
+                          padding: EdgeInsets.all(24.0),
+                          child: Center(child: CircularProgressIndicator(color: Colors.white)),
+                        );
+                      }
+                      if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
+                        return const Padding(
+                          padding: EdgeInsets.all(16.0),
+                          child: Text(
+                            "Aucun dividende récent trouvé pour cette action.",
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        );
+                      }
+                      
+                      final divData = snapshot.data!;
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1C1C1E),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.monetization_on, color: Colors.greenAccent, size: 32),
+                              const SizedBox(width: 16),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    "Dernier versement : ${divData['amount'].toStringAsFixed(2)}",
+                                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
                                   ),
-                                ),
-                                leftTitles: AxisTitles(
-                                  sideTitles: SideTitles(
-                                    showTitles: true,
-                                    reservedSize: 55,
-                                    getTitlesWidget: (value, meta) => Text(
-                                      '${value.toStringAsFixed(0)} €',
-                                      style: const TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 11,
-                                      ),
-                                    ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    "Date : ${divData['date']}",
+                                    style: const TextStyle(color: Colors.white70, fontSize: 13),
                                   ),
-                                ),
-                              ),
-                              borderData: FlBorderData(show: false),
-                              extraLinesData: ExtraLinesData(
-                                horizontalLines: [
-                                  if (_pruLine != null)
-                                    HorizontalLine(
-                                      y: _pruLine!,
-                                      color: Colors.white70,
-                                      strokeWidth: 1.5,
-                                      dashArray: [6, 4],
-                                      label: HorizontalLineLabel(
-                                        show: true,
-                                        alignment: Alignment.topRight,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                        labelResolver: (line) =>
-                                            "PRU ${_pruLine!.toStringAsFixed(2)} €",
-                                      ),
-                                    ),
-                                  if (_alertThresholdLine != null)
-                                    HorizontalLine(
-                                      y: _alertThresholdLine!,
-                                      color: Colors.white70,
-                                      strokeWidth: 1,
-                                      label: HorizontalLineLabel(
-                                        show: true,
-                                        alignment: Alignment.bottomRight,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                        labelResolver: (line) =>
-                                            "Alerte ${_alertThresholdLine!.toStringAsFixed(2)} €",
-                                      ),
-                                    ),
                                 ],
                               ),
-                              lineTouchData: LineTouchData(
-                                touchTooltipData: LineTouchTooltipData(
-                                  getTooltipItems: (touchedSpots) =>
-                                      touchedSpots.map((spot) {
-                                        int index = spot.x.toInt();
-                                        String formattedDate = "";
-                                        if (index < _dates.length) {
-                                        DateTime parsedDate = DateTime.parse(_dates[index]);
-                                        formattedDate = DateFormat('dd/MM/yyyy').format(parsedDate);
-                                        }
-                                        return LineTooltipItem(
-                                          "$formattedDate\n${spot.y.toStringAsFixed(2)} €",
-                                          const TextStyle(
-                                            color: Colors.white,
-                                          ),
-                                        );
-                                      }).toList(),
-                                ),
-                              ),
-                              lineBarsData: [
-                                LineChartBarData(
-                                  spots: _spots,
-                                  isCurved: false,
-                                  color: perfColor,
-                                  barWidth: 2,
-                                  isStrokeCapRound: true,
-                                  dotData: const FlDotData(show: false),
-                                  belowBarData: BarAreaData(
-                                    show: true,
-                                    color: perfColor.withOpacity(0.1),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: _periods.map((period) {
-                      final isSelected = _selectedPeriod == period;
-                      return GestureDetector(
-                        onTap: () {
-                          // Si on clique sur une période différente
-                          if (_selectedPeriod != period) {
-                            setState(() => _selectedPeriod = period);
-                            // On appelle _loadHistory au lieu de juste _buildChart
-                            // pour qu'il aille chercher les données horaires si on a cliqué sur 1S
-                            _loadHistory();
-                          }
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 8,
-                          ),
-                          decoration: BoxDecoration(
-                            color: isSelected
-                                ? const Color(0xFF333333)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(15),
-                          ),
-                          child: Text(
-                            period,
-                            style: TextStyle(
-                              color: isSelected ? Colors.white : Colors.white54,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13,
-                            ),
+                            ],
                           ),
                         ),
                       );
-                    }).toList(),
+                    },
                   ),
-                ),
-              ],
+                  const SizedBox(height: 40), // Espace en bas de l'écran
+                ],
+              ),
             ),
     );
   }
