@@ -389,14 +389,15 @@ class PriceService {
     // 2. Vérifier prix manuel dans Supabase
     try {
       final today = DateTime.now().toIso8601String().split('T')[0];
-      final manual = await supabase
+      final manualList = await supabase
           .from('daily_prices')
           .select('price')
           .eq('instrument_id', instrumentId)
           .eq('date', today)
-          .maybeSingle();
-      if (manual != null) {
-        final p = (manual['price'] as num).toDouble();
+          .order('id', ascending: false)
+          .limit(1);
+      if (manualList.isNotEmpty) {
+        final p = (manualList.first['price'] as num).toDouble();
         if (!p.isNaN) {
           PriceCache.set(instrumentId.toString(), p);
           return p;
@@ -1338,11 +1339,14 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
               );
               if (newPrice != null) {
                 final today = DateTime.now().toIso8601String().split('T')[0];
-                await supabase.from('daily_prices').upsert({
-                  'instrument_id': inst['id'],
-                  'date': today,
-                  'price': newPrice,
-                });
+                await supabase.from('daily_prices').upsert(
+                  {
+                    'instrument_id': inst['id'],
+                    'date': today,
+                    'price': newPrice,
+                  },
+                  onConflict: 'instrument_id,date',
+                );
 
                 PriceCache.set(inst['id'].toString(), newPrice);
 
@@ -1589,7 +1593,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         supabase.from('accounts').select('id, name').order('name'),
         supabase
             .from('transactions')
-            .select('*, instruments(id, name, ticker_isin)')
+            .select('*, instruments(id, name, ticker_isin, account_id)')
             .order('date', ascending: true),
         supabase
             .from('daily_prices')
@@ -1843,7 +1847,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     List<Map<String, dynamic>> filteredTx = _allTransactions;
     if (_selectedAccountId != 'ALL') {
       filteredTx = _allTransactions
-          .where((tx) => tx['account_id'].toString() == _selectedAccountId)
+          .where((tx) =>
+              tx['instruments'] != null &&
+              tx['instruments']['account_id'].toString() == _selectedAccountId)
           .toList();
     }
 
@@ -2172,7 +2178,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     List<Map<String, dynamic>> filteredTx = _allTransactions;
     if (_selectedAccountId != null && _selectedAccountId != 'ALL') {
       filteredTx = _allTransactions
-          .where((tx) => tx['account_id'].toString() == _selectedAccountId)
+          .where((tx) =>
+              tx['instruments'] != null &&
+              tx['instruments']['account_id'].toString() == _selectedAccountId)
           .toList();
     }
 
@@ -2853,6 +2861,9 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   bool _isLoading = true;
   String _selectedPeriod = 'YTD';
   final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
+  final TextEditingController _commentController = TextEditingController(
+    text: '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year} - ',
+  );
   List<FlSpot> _spots = [];
   List<String> _dates = [];
   Map<String, double> _fullHistory = {};
@@ -3116,9 +3127,21 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     if (selectedCategory != null && !kCategories.contains(selectedCategory)) {
       selectedCategory = null;
     }
+    // --- GESTION DE LA DATE POUR LE COMMENTAIRE ---
+    final now = DateTime.now();
+    final formattedDate = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
+    
+    final String existingComment = instrumentData['comment'] ?? '';
+    
+    // Si vide, on met juste la date. Sinon, on garde l'ancien texte, on saute une ligne et on met la nouvelle date.
+    final String initialCommentText = existingComment.trim().isEmpty 
+        ? formattedDate 
+        : '${existingComment.trim()}\n\n$formattedDate';
+
     final TextEditingController commentController = TextEditingController(
-      text: instrumentData['comment'] ?? '',
+      text: initialCommentText,
     );
+    // ----------------------------------------------
 
     // 1. Déclare tes contrôleurs et tes variables d'état pour les comptes en haut (dans ton StatefulWidget)
     final nameController = TextEditingController(
@@ -3273,6 +3296,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                         'ticker_isin': isinController.text.trim(),
                         'category': selectedCategory,
                         'comment': commentController.text.trim(),
+                        'account_id': selectedAccountId,
                       })
                       .eq('id', widget.instrument['id']);
 
@@ -3890,11 +3914,14 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
               );
               if (newPrice != null) {
                 final today = DateTime.now().toIso8601String().split('T')[0];
-                await supabase.from('daily_prices').upsert({
-                  'instrument_id': inst['id'],
-                  'date': today,
-                  'price': newPrice,
-                });
+                await supabase.from('daily_prices').upsert(
+                  {
+                    'instrument_id': inst['id'],
+                    'date': today,
+                    'price': newPrice,
+                  },
+                  onConflict: 'instrument_id,date',
+                );
                 Navigator.pop(context);
                 _loadPortfolioData();
               }
@@ -3916,7 +3943,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       // 1. On récupère toutes les données de Supabase
       final historyData = await supabase
           .from('transactions')
-          .select('*, instruments(name, ticker_isin), accounts(name)')
+          .select('*, instruments(name, ticker_isin, account_id, accounts(name))')
           .order('date', ascending: false);
 
       final instrumentsData = await supabase
@@ -4066,22 +4093,24 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Format du fichier CSV'),
-          content: const SingleChildScrollView(
+                    content: const SingleChildScrollView(
             child: ListBody(
               children: [
                 Text(
-                  'Votre fichier CSV doit contenir 6 colonnes dans cet ordre exact :',
+                  'Votre fichier CSV doit contenir 8 colonnes dans cet ordre exact :',
                 ),
                 SizedBox(height: 12),
-                Text('1. Date d\'achat (jj/mm/aaaa)'),
-                Text('2. Ticker ou ISIN'),
-                Text('3. Quantité'),
-                Text('4. Prix unitaire'),
-                Text('5. Frais de courtage'),
-                Text('6. Compte (PEA, CTO, etc.)'),
+                Text('1. Date (jj/mm/aaaa)'),
+                Text('2. Nom de l\'instrument'),
+                Text('3. Ticker ou ISIN'),
+                Text('4. Type de transaction (Buy, Sell, Deposit, Dividend, Withdrawal)'),
+                Text('5. Quantité'),
+                Text('6. Prix unitaire'),
+                Text('7. Frais de courtage'),
+                Text('8. Compte (PEA, CTO, etc.)'),
                 SizedBox(height: 12),
                 Text(
-                  '⚠️ Les colonnes doivent être séparées par des virgules (,) et les décimales avec des points (ex: 30.50).',
+                  '⚠️ Les colonnes doivent être séparées par des virgules (,) et les décimales avec des points (ex: 30.50). Si l\'instrument ou le compte n\'existe pas encore, ils seront créés automatiquement.',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
                 ),
               ],
@@ -4107,7 +4136,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
-  Future<void> _importCSV() async {
+   Future<void> _importCSV() async {
     setState(() {
       _isImporting = true;
     });
@@ -4122,7 +4151,6 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       if (result != null && result.files.first.bytes != null) {
         final csvString = utf8.decode(result.files.first.bytes!);
 
-        // Attention : met fieldDelimiter: ';' si ton CSV vient d'Excel en français
         List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
           fieldDelimiter: ',',
           eol: '\n',
@@ -4130,45 +4158,111 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
         if (rowsAsListOfValues.isEmpty) return;
 
-        if (rowsAsListOfValues.first[0].toString().toLowerCase().contains(
-          'date',
-        )) {
+        if (rowsAsListOfValues.first[0].toString().toLowerCase().contains('date')) {
           rowsAsListOfValues.removeAt(0);
         }
 
-        List<Map<String, dynamic>> recordsToInsert = [];
         final dateFormat = DateFormat('dd/MM/yyyy');
+        const validTypes = ['Buy', 'Sell', 'Deposit', 'Dividend', 'Withdrawal'];
+
+        // Caches locales : nom (minuscule) -> id, pour éviter les doublons
+        Map<String, dynamic> accountCache = {
+          for (var acc in _accountsList) (acc['name'] as String).toLowerCase(): acc['id']
+        };
+        Map<String, dynamic> instrumentCache = {
+          for (var inst in _instruments) (inst['name'] as String).toLowerCase(): inst['id']
+        };
+
+        int importedCount = 0;
+        int skippedCount = 0;
 
         for (var row in rowsAsListOfValues) {
-          if (row.length < 6) continue;
-
-          DateTime parsedDate = dateFormat.parse(row[0].toString().trim());
-
-          recordsToInsert.add({
-            'transaction_date': parsedDate.toIso8601String(),
-            'ticker_isin': row[1].toString().trim(),
-            'quantity': num.tryParse(row[2].toString()) ?? 0,
-            'unit_price': num.tryParse(row[3].toString()) ?? 0,
-            'brokerage_fees': num.tryParse(row[4].toString()) ?? 0,
-            'account_type': row[5].toString().trim(),
-          });
-        }
-
-        if (recordsToInsert.isNotEmpty) {
-          await Supabase.instance.client
-              .from('transactions')
-              .insert(recordsToInsert);
-
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Importation réussie !')),
-            );
+          if (row.length < 8) {
+            skippedCount++;
+            continue;
           }
 
-          // TODO: Ici, appelle ta fonction qui récupère les transactions de Supabase
-          // pour actualiser l'affichage de ton portefeuille
-          _refreshDonnees();
+          try {
+            DateTime parsedDate = dateFormat.parse(row[0].toString().trim());
+            String name = row[1].toString().trim();
+            String tickerIsin = row[2].toString().trim();
+            String txType = row[3].toString().trim();
+            double quantity =
+                double.tryParse(row[4].toString().replaceAll(',', '.')) ?? 0;
+            double unitPrice =
+                double.tryParse(row[5].toString().replaceAll(',', '.')) ?? 0;
+            double fees =
+                double.tryParse(row[6].toString().replaceAll(',', '.')) ?? 0;
+            String accountName = row[7].toString().trim();
+
+            if (name.isEmpty || accountName.isEmpty) {
+              skippedCount++;
+              continue;
+            }
+
+            String normalizedType = validTypes.firstWhere(
+              (t) => t.toLowerCase() == txType.toLowerCase(),
+              orElse: () => 'Buy',
+            );
+
+            // 1. Compte : récupération ou création
+            dynamic accountId = accountCache[accountName.toLowerCase()];
+            if (accountId == null) {
+              final newAccount = await supabase
+                  .from('accounts')
+                  .insert({'name': accountName})
+                  .select()
+                  .single();
+              accountId = newAccount['id'];
+              accountCache[accountName.toLowerCase()] = accountId;
+            }
+
+            // 2. Instrument : récupération ou création (rattaché au compte)
+            dynamic instrumentId = instrumentCache[name.toLowerCase()];
+            if (instrumentId == null) {
+              final newInstrument = await supabase
+                  .from('instruments')
+                  .insert({
+                    'name': name,
+                    'ticker_isin': tickerIsin.toUpperCase(),
+                    'account_id': accountId,
+                    'is_watchlist': false,
+                  })
+                  .select()
+                  .single();
+              instrumentId = newInstrument['id'];
+              instrumentCache[name.toLowerCase()] = instrumentId;
+            }
+
+            // 3. Transaction
+            await supabase.from('transactions').insert({
+              'instrument_id': instrumentId,
+              'transaction_type': normalizedType,
+              'quantity': quantity,
+              'unit_price': unitPrice,
+              'fees': fees,
+              'date': parsedDate.toIso8601String(),
+            });
+
+            importedCount++;
+          } catch (e) {
+            skippedCount++;
+            continue;
+          }
         }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '$importedCount transaction(s) importée(s)'
+                '${skippedCount > 0 ? ', $skippedCount ligne(s) ignorée(s)' : ''} !',
+              ),
+            ),
+          );
+        }
+
+        _loadPortfolioData();
       }
     } catch (e) {
       if (mounted) {
@@ -4176,12 +4270,13 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             .showSnackBar(SnackBar(content: Text('Erreur : $e')));
       }
     } finally {
-      setState(() {
-        _isImporting = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+        });
+      }
     }
   }
-
   // Fonction fictive pour l'exemple : mets ici ton code pour recharger tes données
   void _refreshDonnees() {
     setState(() {
@@ -4960,7 +5055,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
   final _tickerController = TextEditingController();
-  final _commentController = TextEditingController();
+  late TextEditingController _commentController;
   String? _selectedCategory;
   String? _selectedAccountId;
   List<Map<String, dynamic>> _accountsList = [];
@@ -4970,7 +5065,18 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   @override
   void initState() {
     super.initState();
+    final now = DateTime.now();
+    final formattedDate = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
+    
+    _commentController = TextEditingController(text: formattedDate);
+  
     _loadData(); // <-- Ajouté pour charger les comptes au démarrage
+  }
+
+  @override
+  void dispose() {
+    _commentController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
