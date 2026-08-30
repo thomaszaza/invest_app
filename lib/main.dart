@@ -53,6 +53,9 @@ class AuthGate extends StatelessWidget {
     return StreamBuilder<AuthState>(
       stream: Supabase.instance.client.auth.onAuthStateChange,
       builder: (context, snapshot) {
+        if (snapshot.hasData && snapshot.data!.event == AuthChangeEvent.passwordRecovery) {
+          return const UpdatePasswordScreen();
+        }
         final session =
             snapshot.data?.session ??
             Supabase.instance.client.auth.currentSession;
@@ -67,6 +70,7 @@ class AuthGate extends StatelessWidget {
       },
     );
   }
+
 }
 
 /// ==========================================
@@ -129,6 +133,40 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) setState(() => _isLoading = false);
     }
   }
+  Future<void> _resetPassword() async {
+  final email = _emailController.text.trim();
+  if (email.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Entre ton email d’abord pour réinitialiser ton mot de passe.'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+    return;
+  }
+
+  try {
+    // Envoi de l'e-mail de réinitialisation (adapte le deep link selon ta config)
+    await Supabase.instance.client.auth.resetPasswordForEmail(
+      email,
+      redirectTo: 'https://thomaszaza.github.io/zaza-invest/reset-callback',
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('E-mail de réinitialisation envoyé ! Vérifie ta boîte mail.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+}
 
   @override
   Widget build(BuildContext context) {
@@ -238,6 +276,20 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                   ),
+                  // À placer juste après le TextField du mot de passe et avant le SizedBox(height: 28)
+if (!_isSignUp) ...[
+  Align(
+    alignment: Alignment.centerRight,
+    child: TextButton(
+      onPressed: _resetPassword,
+      child: Text(
+        'Mot de passe oublié ?',
+        style: TextStyle(color: Colors.grey[400], fontSize: 13),
+      ),
+    ),
+  ),
+  const SizedBox(height: 12),
+],
                   const SizedBox(height: 28),
 
                   // Bouton Valider
@@ -602,9 +654,7 @@ class PriceService {
           }
         }
       }
-    } catch (e) {
-      
-    }
+    } catch (e) {}
 
     if (history.isNotEmpty) {
       PriceCache.setHistory(cacheKey, history);
@@ -678,9 +728,7 @@ class AlertsService {
         'triggered': false,
       });
     
-    } catch (e) {
-     
-    }
+    } catch (e) {}
   }
 } // <--- ON FERME LA CLASSE ALERTSERVICE ICI
 
@@ -864,7 +912,11 @@ class PositionsScreen extends StatefulWidget {
 class _PositionsScreenState extends State<PositionsScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
+  
+  List<Map<String, dynamic>> _allPositions = []; 
   List<Map<String, dynamic>> _positions = [];
+  List<String> _accounts = ['Tous les comptes'];
+  String _selectedAccount = 'Tous les comptes';
 
   double _totalPortfolioValue = 0.0;
   double _totalInvestedValue = 0.0;
@@ -875,26 +927,48 @@ class _PositionsScreenState extends State<PositionsScreen> {
     _loadPositions();
   }
 
+  void _filterPositions() {
+    double newInvested = 0.0;
+    double newGlobal = 0.0;
+    List<Map<String, dynamic>> filtered = [];
+
+    for (var pos in _allPositions) {
+      if (_selectedAccount == 'Tous les comptes' || pos['account'] == _selectedAccount) {
+        filtered.add(pos);
+        if (!pos['pru'].isNaN && !pos['quantity'].isNaN) {
+          newInvested += (pos['pru'] * pos['quantity']);
+          newGlobal += pos['totalValue'];
+        }
+      }
+    }
+
+    filtered.sort((a, b) => (b['totalValue'] as double).compareTo(a['totalValue'] as double));
+
+    setState(() {
+      _positions = filtered;
+      _totalInvestedValue = newInvested.isNaN ? 0.0 : newInvested;
+      _totalPortfolioValue = newGlobal.isNaN ? 0.0 : newGlobal;
+    });
+  }
+
   Future<void> _loadPositions() async {
     setState(() => _isLoading = true);
 
     try {
-      // 1. On appelle directement la Vue SQL. Plus aucun calcul lourd sur le téléphone !
       final viewData = await supabase.from('portfolio_view').select('*');
 
       List<Map<String, dynamic>> validPositions = [];
-      double initialTotalInvested = 0.0;
-      double initialGlobalValue = 0.0;
+      Set<String> foundAccounts = {'Tous les comptes'}; 
 
-      // 2. On prépare simplement les données pour l'affichage
       for (var row in viewData) {
         String nameStr = row['name'].toString().toLowerCase();
 
-        // On continue d'ignorer le cash
         if (!nameStr.contains('liquidit') && !nameStr.contains('cash')) {
-          // On s'assure que les nombres venant du SQL sont bien au format double
           double qty = (row['quantity'] ?? 0).toDouble();
           double pru = (row['pru'] ?? 0).toDouble();
+          String accountName = row['account_name'] ?? 'Autre'; 
+          
+          foundAccounts.add(accountName);
 
           Map<String, dynamic> pos = {
             'id': row['id'],
@@ -902,42 +976,25 @@ class _PositionsScreenState extends State<PositionsScreen> {
             'isin': row['isin'] ?? '',
             'category': row['category'],
             'comment': row['comment'],
+            'account': accountName,
             'quantity': qty,
             'pru': pru,
             'currentPrice': null,
-            'totalValue': pru * qty, // Valeur par défaut avant d'avoir internet
+            'totalValue': pru * qty, 
           };
 
-          if (!pru.isNaN && !qty.isNaN) {
-            initialTotalInvested += (pru * qty);
-            initialGlobalValue += pos['totalValue'];
-          }
           validPositions.add(pos);
         }
       }
 
-      // Tri initial basé sur l'investissement
-      validPositions.sort(
-        (a, b) =>
-            (b['totalValue'] as double).compareTo(a['totalValue'] as double),
-      );
-
-      // 3. Affichage immédiat du portefeuille
       if (mounted) {
-        setState(() {
-          _positions = validPositions;
-          _totalInvestedValue = initialTotalInvested.isNaN
-              ? 0.0
-              : initialTotalInvested;
-          _totalPortfolioValue = initialGlobalValue.isNaN
-              ? 0.0
-              : initialGlobalValue;
-          _isLoading = false;
-        });
+        _accounts = foundAccounts.toList();
+        _allPositions = validPositions;
+        _filterPositions(); 
+        setState(() => _isLoading = false);
       }
 
-      // 4. Récupération des prix en direct, en parallèle
-      List<Future<void>> fetchFutures = validPositions.map((pos) async {
+      List<Future<void>> fetchFutures = _allPositions.map((pos) async {
         try {
           double? livePrice = await PriceService.fetchLivePrice(
             pos['name'],
@@ -951,35 +1008,25 @@ class _PositionsScreenState extends State<PositionsScreen> {
 
             await AlertsService.checkAlerts(pos, livePrice);
 
-            // Mise à jour visuelle dès qu'un prix arrive
             if (mounted) {
               setState(() {
                 pos['currentPrice'] = livePrice;
                 pos['totalValue'] = newTotalValue;
-                _totalPortfolioValue =
-                    _totalPortfolioValue - oldTotalValue + newTotalValue;
+                
+                if (_selectedAccount == 'Tous' || _selectedAccount == pos['account']) {
+                  _totalPortfolioValue = _totalPortfolioValue - oldTotalValue + newTotalValue;
+                }
               });
             }
           }
-        } catch (e) {
-        
-        }
+        } catch (e) {}
       }).toList();
 
       await Future.wait(fetchFutures);
+      
+      if (mounted) _filterPositions();
 
-      // Tri final
-      if (mounted) {
-        setState(() {
-          _positions.sort(
-            (a, b) => (b['totalValue'] as double).compareTo(
-              a['totalValue'] as double,
-            ),
-          );
-        });
-      }
     } catch (e) {
-     
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -996,9 +1043,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
       }
     }
 
-    Color globalColor = globalPerfAbs >= 0
-        ? Colors.greenAccent
-        : Colors.redAccent;
+    Color globalColor = globalPerfAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
     String globalSign = globalPerfAbs >= 0 ? "+" : "";
 
     return Scaffold(
@@ -1006,11 +1051,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
       appBar: AppBar(
         title: const Text(
           'Positions',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-            fontSize: 24,
-          ),
+          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 24),
         ),
         backgroundColor: Colors.black,
         actions: [
@@ -1019,9 +1060,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(
-                  builder: (context) => const AddTransactionScreen(),
-                ),
+                MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
               );
             },
           ),
@@ -1031,35 +1070,71 @@ class _PositionsScreenState extends State<PositionsScreen> {
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : Column(
               children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 15,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.center, // Centré verticalement
                     children: [
-                      const Text(
-                        "Capital Total Actuel",
-                        style: TextStyle(color: Colors.white54, fontSize: 13),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        "${_totalPortfolioValue.toStringAsFixed(2).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ').replaceFirst('.', ',')} €",
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 26,
-                          fontWeight: FontWeight.bold,
+                      // 1. Le capital et la performance (à gauche maintenant)
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start, // Aligné à gauche
+                          children: [
+                            const Text(
+                              "Capital Actuel",
+                              style: TextStyle(color: Colors.white54, fontSize: 13),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              "${_totalPortfolioValue.toStringAsFixed(2).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ').replaceFirst('.', ',')} €",
+                              style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                              textAlign: TextAlign.left,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
+                              style: TextStyle(color: globalColor, fontSize: 14, fontWeight: FontWeight.bold),
+                              textAlign: TextAlign.left,
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
-                        style: TextStyle(
-                          color: globalColor,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
+                      
+                      const SizedBox(width: 10), // Petit espace pour éviter que le texte touche le bouton
+                      
+                      // 2. La liste déroulante (à droite maintenant)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1C1C1E),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: _selectedAccount,
+                            dropdownColor: const Color(0xFF2C2C2E),
+                            icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
+                            isExpanded: false, 
+                            style: const TextStyle(
+                              color: Colors.white, 
+                              fontSize: 16, 
+                              fontWeight: FontWeight.bold
+                            ),
+                            items: _accounts.map((String account) {
+                              return DropdownMenuItem<String>(
+                                value: account,
+                                child: Text(account),
+                              );
+                            }).toList(),
+                            onChanged: (String? newValue) {
+                              if (newValue != null && newValue != _selectedAccount) {
+                                setState(() => _selectedAccount = newValue);
+                                _filterPositions();
+                              }
+                            },
+                          ),
                         ),
                       ),
                     ],
@@ -1067,16 +1142,12 @@ class _PositionsScreenState extends State<PositionsScreen> {
                 ),
                 Expanded(
                   child: RefreshIndicator(
-                    onRefresh:
-                        _loadPositions, // Relance le chargement et les calculs
+                    onRefresh: _loadPositions,
                     color: Colors.white,
                     backgroundColor: const Color(0xFF1C1C1E),
                     child: ListView.builder(
-                      physics: const AlwaysScrollableScrollPhysics(), // Indispensable pour pouvoir tirer même s'il y a peu d'éléments
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       itemCount: _positions.length,
                       itemBuilder: (context, index) {
                         final pos = _positions[index];
@@ -1086,10 +1157,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                         Color valueColor = Colors.white;
                         String perfText = "";
 
-                        if (currentPrice > 0 &&
-                            pru > 0 &&
-                            !currentPrice.isNaN &&
-                            !pru.isNaN) {
+                        if (currentPrice > 0 && pru > 0 && !currentPrice.isNaN && !pru.isNaN) {
                           double perfRatio = ((currentPrice - pru) / pru) * 100;
                           String sign = perfRatio >= 0 ? "+" : "";
                           perfText = "$sign${perfRatio.toStringAsFixed(2)}%";
@@ -1103,62 +1171,41 @@ class _PositionsScreenState extends State<PositionsScreen> {
 
                         return Card(
                           color: const Color(0xFF1C1C1E),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                           margin: const EdgeInsets.only(bottom: 6),
                           child: InkWell(
                             borderRadius: BorderRadius.circular(10),
                             onTap: () => Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) =>
-                                    InstrumentDetailScreen(instrument: pos),
+                                builder: (context) => InstrumentDetailScreen(instrument: pos),
                               ),
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(8.0),
                               child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           pos['name'],
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                          ),
+                                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 16),
                                         ),
                                         const SizedBox(height: 6),
                                         Text(
                                           "Qté: ${pos['quantity'].toStringAsFixed(2)}",
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 13,
-                                          ),
+                                          style: const TextStyle(color: Colors.white54, fontSize: 13),
                                         ),
                                         Text(
                                           "PRU: ${pru.toStringAsFixed(2)} €",
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 13,
-                                          ),
+                                          style: const TextStyle(color: Colors.white54, fontSize: 13),
                                         ),
-
                                         Text(
-                                          pos['currentPrice'] != null
-                                              ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
-                                              : "Non coté",
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 13,
-                                          ),
+                                          pos['currentPrice'] != null ? "Actuel: ${currentPrice.toStringAsFixed(2)} €" : "Non coté",
+                                          style: const TextStyle(color: Colors.white54, fontSize: 13),
                                         ),
                                       ],
                                     ),
@@ -1167,33 +1214,21 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                     crossAxisAlignment: CrossAxisAlignment.end,
                                     children: [
                                       Text(
-                                        pos['currentPrice'] != null
-                                            ? "${pos['totalValue'].toStringAsFixed(2)} €"
-                                            : "-- €",
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
-                                          color: valueColor,
-                                        ),
+                                        pos['currentPrice'] != null ? "${pos['totalValue'].toStringAsFixed(2)} €" : "-- €",
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: valueColor),
                                       ),
                                       const SizedBox(height: 6),
                                       if (perfText.isNotEmpty)
                                         Text(
                                           perfText,
-                                          style: TextStyle(
-                                            color: valueColor,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                          style: TextStyle(color: valueColor, fontSize: 13, fontWeight: FontWeight.bold),
                                         ),
                                       if (currentPrice > 0 && pru > 0) ...[
                                         const SizedBox(height: 2),
                                         Text(
                                           "PV : ${((currentPrice - pru) * pos['quantity']) >= 0 ? '+' : ''}${((currentPrice - pru) * pos['quantity']).toStringAsFixed(2)} €",
                                           style: TextStyle(
-                                            color: (currentPrice - pru) >= 0
-                                                ? Colors.greenAccent
-                                                : Colors.redAccent,
+                                            color: (currentPrice - pru) >= 0 ? Colors.greenAccent : Colors.redAccent,
                                             fontSize: 13,
                                             fontWeight: FontWeight.bold,
                                           ),
@@ -1204,13 +1239,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                   IconButton(
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(),
-                                    icon: const Icon(
-                                      Icons.notifications_none,
-                                      color: Colors.white38,
-                                      size: 20,
-                                    ),
-                                    onPressed: () =>
-                                        showCreateAlertDialog(context, pos),
+                                    icon: const Icon(Icons.notifications_none, color: Colors.white38, size: 20),
+                                    onPressed: () => showCreateAlertDialog(context, pos),
                                   ),
                                 ],
                               ),
@@ -1226,7 +1256,6 @@ class _PositionsScreenState extends State<PositionsScreen> {
     );
   }
 }
-
 // ==========================================
 // 2bis. LA PAGE "WATCHLIST"
 // ==========================================
@@ -1286,9 +1315,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
               inst['currentPrice'] = price;
             });
           }
-        } catch (e) {
-          
-        }
+        } catch (e) {}
       }).toList();
 
       // On laisse les requêtes se terminer en tâche de fond
@@ -1476,7 +1503,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                               Text(
                                 price != null
                                     ? "${price.toStringAsFixed(2)} €"
-                                    : "Non coté",
+                                    : "-",
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.bold,
@@ -1525,11 +1552,6 @@ class PerformanceScreen extends StatefulWidget {
   @override
   State<PerformanceScreen> createState() => _PerformanceScreenState();
 }
-
-// NOTE: garde tes imports existants (fl_chart, supabase_flutter, ton PriceService, etc.)
-// Ce fichier reprend TA classe _PerformanceScreenState avec _calculateChart() corrigé.
-// Le reste (initState, _loadAllData, build) est inchangé, tu peux remplacer
-// directement la méthode _calculateChart dans ton fichier existant si tu préfères.
 
 class _PerformanceScreenState extends State<PerformanceScreen> {
   List<Map<String, dynamic>> _benchmarkList = [];
@@ -1656,7 +1678,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             for (var b in aferBuys) {
               double q = (b['quantity'] ?? 0).toDouble();
               double p = (b['unit_price'] ?? 0).toDouble();
-              totalInv += (q * p);
+              // Les frais de transaction sont ajoutés au prix d'achat
+              // pour que le PRU (et donc la performance) reflète le coût réel.
+              double fee = (b['fees'] ?? 0).toDouble();
+              totalInv += (q * p) + fee;
               totalQty += q;
             }
             double pru = totalQty > 0.001 ? totalInv / totalQty : 0.0;
@@ -1719,28 +1744,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
   // ---------------------------------------------------------------------
   // MÉTHODE CORRIGÉE
-  // ---------------------------------------------------------------------
-  //
-  // Bug #1 (créneaux) : l'ancien code ne regardait que 7 jours en arrière
-  // pour trouver un prix Yahoo. Dès qu'un titre avait un trou de données
-  // (jour férié, valeur peu liquide...) de plus de 7 jours, le prix
-  // retombait brutalement sur le PRU, créant un "créneau" (chute puis
-  // rebond) sur la courbe.
-  //
-  // Bug #2 (benchmark qui ne colle pas) : le prix de référence du
-  // benchmark (base 100%) était calé, en cas de données manquantes le
-  // premier jour, sur une valeur de repli arbitraire (1.0), ce qui
-  // faussait tout le calcul en pourcentage et empêchait la courbe du
-  // benchmark de se superposer à celle du portefeuille.
-  //
-  // Correctif : on trie une bonne fois l'historique de chaque titre et
-  // on avance un pointeur jour après jour ("forward fill") : le prix
-  // utilisé est toujours le DERNIER prix réellement connu, sans jamais
-  // revenir en arrière sur le PRU une fois qu'une cotation a été
-  // trouvée. Le PRU ne sert de repli qu'AVANT la toute première
-  // cotation disponible. Même logique appliquée au benchmark, avec un
-  // garde-fou : si le benchmark n'a aucune donnée de prix exploitable,
-  // on n'affiche plus de fausse ligne plate à 0%.
   // ---------------------------------------------------------------------
   double _interpolatedPrice(
     List<MapEntry<DateTime, double>> hist,
@@ -1886,7 +1889,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     }
 
     // ---- Historique de prix trié ----
-    // Pour "1S", on utilise l'intraday (plusieurs points par jour) si disponible.
     final Map<String, Map<String, double>> histSource =
         (_selectedPeriod == '1S' && _yahooIntraday.isNotEmpty)
         ? _yahooIntraday
@@ -1928,8 +1930,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         ? _aferData[benchName]
         : null;
 
-    // Aucune donnée exploitable pour ce benchmark -> on désactive plutôt
-    // que d'afficher une ligne plate trompeuse.
     if (benchName != null &&
         (benchSortedHist == null || benchSortedHist.isEmpty) &&
         benchAferInfo == null) {
@@ -1948,24 +1948,20 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     Duration chartStep;
     switch (_selectedPeriod) {
       case '1S':
-        // 1 point toutes les heures
         chartStep = const Duration(hours: 1);
         break;
       case '1M':
       case '3M':
-      case 'YTD': // J'ai inclus YTD ici pour avoir 1 point par jour
+      case 'YTD':
         chartStep = const Duration(days: 1);
         break;
       case '1A':
-        // 1 point par semaine
         chartStep = const Duration(days: 7);
         break;
       case 'ALL':
       default:
-        // Calcul dynamique pour avoir environ 45 points au total
         int totalDays = endDate.difference(startDate).inDays;
         int stepDays = (totalDays / 45).ceil();
-        // Sécurité : on s'assure d'avoir au moins 1 jour d'intervalle
         if (stepDays < 1) stepDays = 1;
         chartStep = Duration(days: stepDays);
         break;
@@ -1999,6 +1995,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           String type = tx['transaction_type'];
           double q = (tx['quantity'] ?? 0).toDouble();
           double p = (tx['unit_price'] ?? 0).toDouble();
+          // Frais de transaction : ajoutés au coût d'achat pour un PRU réel.
+          double fee = (tx['fees'] ?? 0).toDouble();
 
           if (!instStats.containsKey(instName)) {
             instStats[instName] = {
@@ -2013,13 +2011,14 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             instStats[instName]!['boughtQty'] =
                 instStats[instName]!['boughtQty']! + q;
             instStats[instName]!['invested'] =
-                instStats[instName]!['invested']! + (q * p);
+                instStats[instName]!['invested']! + (q * p) + fee;
           } else if (type == 'Sell') {
             double currentPru = instStats[instName]!['boughtQty']! > 0.001
                 ? instStats[instName]!['invested']! /
                       instStats[instName]!['boughtQty']!
                 : 0.0;
-            cumulativeRealizedGains += q * (p - currentPru);
+            // Les frais de vente réduisent le produit net de la cession.
+            cumulativeRealizedGains += q * (p - currentPru) - fee;
             instStats[instName]!['qty'] = instStats[instName]!['qty']! - q;
             instStats[instName]!['boughtQty'] =
                 instStats[instName]!['boughtQty']! - q;
@@ -2039,7 +2038,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         double qty = stats['qty']!;
         if (qty <= 0.001) return;
 
-        // On exclut le cash
         if (instName.toLowerCase().contains('liquidit') ||
             instName.toUpperCase().contains('CASH'))
           return;
@@ -2049,8 +2047,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             : 0.0;
         dailyInvestedCapital += (pru * qty);
 
-        // Prix par défaut = PRU, seulement tant qu'aucune cotation réelle
-        // n'a encore été rencontrée.
         double price = pru;
 
         if (sortedHistories.containsKey(instName)) {
@@ -2091,7 +2087,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             benchSortedHist.first.value,
           );
         } else {
-          // Cas AFER : interpolation linéaire PRU global -> dernier prix connu.
           double globalPru = benchAferInfo!['pru'];
           double latestPrice = benchAferInfo['latestPrice'];
           DateTime firstDate = benchAferInfo['firstDate'];
@@ -2134,12 +2129,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         ? (periodAbs / startValue) * 100
         : (endInvested > 0 ? (periodAbs / endInvested) * 100 : 0.0);
 
-    // ---- Courbe "Profit (%)" rebasée sur le début de la plage ----
-    // On veut que le % de profit parte de 0 au premier jour de la période
-    // choisie (1S, 1M, 3M...), et pas depuis le tout début du portefeuille.
-    // On utilise la même logique que le calcul d'en-tête ci-dessus
-    // (valeur - capital net investi depuis le début de la plage), mais
-    // appliquée jour par jour.
     if (spotsValue.isNotEmpty) {
       double refValue = spotsValue.first.y;
       double refInvested = investedSeries.first;
@@ -2157,13 +2146,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     setState(() {
       _totalDividends = divs;
-
-      // IMPORTANT :
-      // Ne pas utiliser lastValue ici.
-      // _currentPortfolioValue est maintenant calculé
-      // séparément avec portfolio_view + prix live,
-      // comme dans PositionsScreen.
-
       _chartDataValue = spotsValue;
       _chartDataPercent = spotsPercent;
       _chartDataBenchmark = spotsBenchmark;
@@ -2193,6 +2175,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       String type = tx['transaction_type'];
       double qty = (tx['quantity'] ?? 0).toDouble();
       double price = (tx['unit_price'] ?? 0).toDouble();
+      double fee = (tx['fees'] ?? 0).toDouble();
 
       if (!tempPositions.containsKey(name)) {
         tempPositions[name] = {
@@ -2208,7 +2191,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       if (type == 'Buy' || type == 'Deposit') {
         tempPositions[name]!['quantity'] += qty;
         tempPositions[name]!['totalBoughtQty'] += qty;
-        tempPositions[name]!['totalInvested'] += (qty * price);
+        // Frais de transaction ajoutés au coût d'achat
+        tempPositions[name]!['totalInvested'] += (qty * price) + fee;
       } else if (type == 'Sell') {
         double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
             ? tempPositions[name]!['totalInvested'] /
@@ -2269,6 +2253,79 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     }
   }
 
+  // Nom du benchmark actuellement sélectionné, pour l'affichage sur le bouton.
+  String get _selectedBenchmarkName {
+    try {
+      return _benchmarkList
+          .firstWhere((e) => e['id'].toString() == _selectedBenchmarkId)['name'];
+    } catch (e) {
+      return 'Aucun Benchmark';
+    }
+  }
+
+  // Petit sélecteur de benchmark, ouvert depuis le bouton en haut à gauche.
+  void _showBenchmarkPicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1C1C1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 14),
+                child: Text(
+                  "Choisir un benchmark",
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: _benchmarkList.length,
+                  itemBuilder: (context, index) {
+                    final b = _benchmarkList[index];
+                    final bool selected =
+                        b['id'].toString() == _selectedBenchmarkId;
+                    return ListTile(
+                      title: Text(
+                        b['name'],
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight:
+                              selected ? FontWeight.bold : FontWeight.normal,
+                        ),
+                      ),
+                      trailing: selected
+                          ? const Icon(Icons.check, color: Colors.greenAccent)
+                          : null,
+                      onTap: () {
+                        setState(() {
+                          _selectedBenchmarkId = b['id'].toString();
+                        });
+                        Navigator.pop(context);
+                        _calculateChart();
+                      },
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     List<FlSpot> activeChartData = _showPercent
@@ -2293,11 +2350,67 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           : SingleChildScrollView(
               child: Column(
                 children: [
+                  // --- Ligne du haut : bouton benchmark (gauche) + sélecteur de compte ---
+                  Container(
+                    color: Colors.black,
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    child: Row(
+                      children: [
+                        // Petit bouton benchmark en haut à gauche
+                        GestureDetector(
+                          onTap: _showBenchmarkPicker,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _selectedBenchmarkId != 'NONE'
+                                  ? Colors.purpleAccent.withOpacity(0.15)
+                                  : Colors.white.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: _selectedBenchmarkId != 'NONE'
+                                    ? Colors.purpleAccent
+                                    : Colors.white24,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.compare_arrows,
+                                  size: 16,
+                                  color: _selectedBenchmarkId != 'NONE'
+                                      ? Colors.purpleAccent
+                                      : Colors.white54,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _selectedBenchmarkId != 'NONE'
+                                      ? _selectedBenchmarkName
+                                      : "Benchmark",
+                                  style: TextStyle(
+                                    color: _selectedBenchmarkId != 'NONE'
+                                        ? Colors.purpleAccent
+                                        : Colors.white54,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                      ],
+                    ),
+                  ),
                   Container(
                     color: Colors.black,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
-                      vertical: 8,
+                      vertical: 0,
                     ),
                     child: DropdownButtonHideUnderline(
                       child: DropdownButton<String>(
@@ -2324,40 +2437,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                           setState(() => _selectedAccountId = value);
                           _calculateChart();
                           _calculatePieData();
-                        },
-                      ),
-                    ),
-                  ),
-                  Container(
-                    color: Colors.black,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 0,
-                    ),
-                    child: DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        isExpanded: true,
-                        dropdownColor: const Color(0xFF1C1C1E),
-                        value: _selectedBenchmarkId,
-                        icon: const Icon(
-                          Icons.compare_arrows,
-                          color: Colors.white,
-                        ),
-                        items: _benchmarkList.map((inst) {
-                          return DropdownMenuItem<String>(
-                            value: inst['id'].toString(),
-                            child: Text(
-                              inst['name'],
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                        onChanged: (value) {
-                          setState(() => _selectedBenchmarkId = value);
-                          _calculateChart();
                         },
                       ),
                     ),
@@ -2602,7 +2681,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 lineTouchData: LineTouchData(
   touchTooltipData: LineTouchTooltipData(
     getTooltipItems: (touchedSpots) {
-      // 1. Récupération de la date formatée
       String formattedDate = "";
       if (touchedSpots.isNotEmpty) {
         int index = touchedSpots.first.x.toInt();
@@ -2620,7 +2698,6 @@ lineTouchData: LineTouchData(
             ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
             : "${spot.y.toStringAsFixed(2)} €";
 
-        // Détermination de la couleur de la valeur
         Color valueColor;
         if (isBenchmark) {
           valueColor = Colors.purpleAccent;
@@ -2628,23 +2705,20 @@ lineTouchData: LineTouchData(
           valueColor = _periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
         }
 
-        // 2. Utilisation de List<TextSpan> au lieu de List<InlineSpan>
         List<TextSpan> children = [];
 
-        // On n'affiche la date que sur le premier point pour éviter les doublons
         if (isFirst) {
           children.add(
             TextSpan(
               text: "$formattedDate\n",
               style: const TextStyle(
-                color: Colors.white, // Date toujours en blanc
+                color: Colors.white,
                 fontWeight: FontWeight.bold,
               ),
             ),
           );
         }
 
-        // On ajoute la valeur avec sa couleur respective
         children.add(
           TextSpan(
             text: valStr,
@@ -2858,7 +2932,13 @@ class InstrumentDetailScreen extends StatefulWidget {
 }
 
 class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
+  // _isLoading ne concerne QUE le tout premier chargement de l'écran
+  // (affiche/retire le spinner plein écran une seule fois).
   bool _isLoading = true;
+  // _isChartLoading concerne les changements de plage de dates : seul le
+  // graphique doit se recharger, pas le reste de l'écran (prix, dividendes...).
+  bool _isChartLoading = false;
+
   String _selectedPeriod = 'YTD';
   final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
   final TextEditingController _commentController = TextEditingController(
@@ -2871,14 +2951,31 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   double? _pruLine;
   double? _alertThresholdLine;
 
+  // Performance calculée sur les VRAIS premiers/derniers prix de la plage
+  // (et non sur les points échantillonnés du graphique), pour coller au plus
+  // près des chiffres affichés par des sources externes comme TradingView.
+  double? _periodFirstPrice;
+  double? _periodLastPrice;
+
+  // Le Future du dividende est calculé une seule fois (pas à chaque
+  // rebuild), pour éviter de relancer l'appel réseau à chaque setState.
+  late Future<Map<String, dynamic>?> _dividendFuture;
+
   @override
   void initState() {
     super.initState();
-    _loadHistory();
+    _dividendFuture = _fetchDividendData();
+    _loadHistory(isInitial: true);
   }
 
-  Future<void> _loadHistory() async {
-    setState(() => _isLoading = true);
+  Future<void> _loadHistory({bool isInitial = false}) async {
+    if (isInitial) {
+      setState(() => _isLoading = true);
+    } else {
+      // Changement de plage de dates : on ne recharge QUE le graphique.
+      setState(() => _isChartLoading = true);
+    }
+
     String name = widget.instrument['name'];
     String isin =
         widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
@@ -2941,10 +3038,19 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       _fullHistory[now] = live;
     }
 
-    await _loadReferenceLines();
+    // Les lignes de référence (PRU, seuil d'alerte) ne dépendent pas de la
+    // plage sélectionnée : on ne les recharge qu'au premier chargement.
+    if (isInitial) {
+      await _loadReferenceLines();
+    }
 
     _buildChart();
-    if (mounted) setState(() => _isLoading = false);
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _isChartLoading = false;
+      });
+    }
   }
 
   Future<void> _loadReferenceLines() async {
@@ -2960,7 +3066,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       try {
         final txData = await supabase
             .from('transactions')
-            .select('transaction_type, quantity, unit_price')
+            .select('transaction_type, quantity, unit_price, fees')
             .eq('instrument_id', id)
             .order('date', ascending: true);
 
@@ -2971,12 +3077,14 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         for (var tx in txData) {
           double q = (tx['quantity'] ?? 0).toDouble();
           double p = (tx['unit_price'] ?? 0).toDouble();
+          // Frais de transaction ajoutés au prix d'achat pour un PRU exact.
+          double fee = (tx['fees'] ?? 0).toDouble();
           String type = tx['transaction_type'];
 
           if (type == 'Buy' || type == 'Deposit') {
             qty += q;
             boughtQty += q;
-            invested += (q * p);
+            invested += (q * p) + fee;
           } else if (type == 'Sell') {
             double currentPru = boughtQty > 0.001 ? invested / boughtQty : 0.0;
             qty -= q;
@@ -3019,6 +3127,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     if (_fullHistory.isEmpty) {
       _spots = [];
       _dates = [];
+      _periodFirstPrice = null;
+      _periodLastPrice = null;
       return;
     }
 
@@ -3046,6 +3156,17 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     }).toList();
 
     if (filteredDates.isEmpty) return;
+
+    // ---- Performance exacte sur la plage ----
+    // On se base sur le PREMIER et le DERNIER prix réellement connus dans la
+    // plage sélectionnée (avant tout échantillonnage pour l'affichage du
+    // graphique). C'est cette valeur, et non celle des points affichés sur
+    // le graphique (qui peuvent être sous-échantillonnés), qui sert au
+    // calcul du "% sur la période" affiché en haut de l'écran. Cela réduit
+    // l'écart avec des sources comme TradingView, qui comparent toujours
+    // la clôture de début de période à la dernière cotation connue.
+    _periodFirstPrice = _fullHistory[filteredDates.first];
+    _periodLastPrice = _fullHistory[filteredDates.last];
 
     // C'est cette variable qui manquait dans ton code !
     List<String> dates = [];
@@ -3094,6 +3215,19 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         if (dates.last != filteredDates.last) {
           dates.add(filteredDates.last);
         }
+      }
+    }
+
+    // On s'assure que le tout premier et le tout dernier point réels de la
+    // plage sont toujours présents dans les données du graphique, pour que
+    // la courbe démarre et termine exactement sur les valeurs utilisées
+    // pour le calcul de performance ci-dessus.
+    if (dates.isNotEmpty) {
+      if (dates.first != filteredDates.first) {
+        dates.insert(0, filteredDates.first);
+      }
+      if (dates.last != filteredDates.last) {
+        dates.add(filteredDates.last);
       }
     }
 
@@ -3185,7 +3319,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                   controller: nameController,
                   style: const TextStyle(color: Colors.white),
                   decoration: const InputDecoration(
-                    labelText: 'Nom de l\'instrument',
+                    labelText: 'Nom de l\'action / ETF / crypto',
                     labelStyle: TextStyle(color: Colors.white54),
                     enabledBorder: UnderlineInputBorder(
                       borderSide: BorderSide(color: Colors.white),
@@ -3403,10 +3537,12 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
   Widget build(BuildContext context) {
     double perfPct = 0.0;
     Color perfColor = Colors.white;
-    if (_spots.length > 1) {
-      double first = _spots.first.y;
-      double last = _spots.last.y;
-      if (first > 0.001) perfPct = ((last - first) / first) * 100;
+    // On calcule la performance à partir des VRAIS prix de début/fin de
+    // plage (voir _buildChart), pas des points échantillonnés du graphique.
+    if (_periodFirstPrice != null &&
+        _periodLastPrice != null &&
+        _periodFirstPrice! > 0.001) {
+      perfPct = ((_periodLastPrice! - _periodFirstPrice!) / _periodFirstPrice!) * 100;
       perfColor = perfPct >= 0 ? Colors.greenAccent : Colors.redAccent;
     }
 
@@ -3451,7 +3587,7 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
                           style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold),
                         ),
                         const SizedBox(height: 6),
-                        if (_spots.length > 1)
+                        if (_periodFirstPrice != null && _periodLastPrice != null)
                           Text(
                             "${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)} % sur la période",
                             style: TextStyle(color: perfColor, fontWeight: FontWeight.bold, fontSize: 15),
@@ -3486,7 +3622,11 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
                     height: 300,
                     child: Padding(
                       padding: const EdgeInsets.only(right: 20, left: 10, bottom: 10),
-                      child: _spots.isEmpty
+                      child: _isChartLoading
+                          ? const Center(
+                              child: CircularProgressIndicator(color: Colors.white),
+                            )
+                          : _spots.isEmpty
                           ? const Center(
                               child: Text("Pas de données disponibles", style: TextStyle(color: Colors.white54)),
                             )
@@ -3674,6 +3814,7 @@ LineChart(
                           onTap: () {
                             if (_selectedPeriod != period) {
                               setState(() => _selectedPeriod = period);
+                              // Seul le graphique se recharge ici (isInitial: false).
                               _loadHistory();
                             }
                           },
@@ -3706,7 +3847,7 @@ LineChart(
                     ),
                   ),
                   FutureBuilder<Map<String, dynamic>?>(
-                    future: _fetchDividendData(),
+                    future: _dividendFuture,
                     builder: (context, snapshot) {
                       if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Padding(
@@ -3737,19 +3878,11 @@ LineChart(
                             children: [
                               const Icon(Icons.monetization_on, color: Colors.greenAccent, size: 32),
                               const SizedBox(width: 16),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    "Dernier versement : ${divData['amount'].toStringAsFixed(2)}",
-                                    style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    "Date : ${divData['date']}",
-                                    style: const TextStyle(color: Colors.white70, fontSize: 13),
-                                  ),
-                                ],
+                              Expanded(
+                                child: Text(
+                                  "Dernier versement : ${divData['amount'].toStringAsFixed(2)} €/unité le ${divData['date']}",
+                                  style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                ),
                               ),
                             ],
                           ),
@@ -3917,6 +4050,73 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         ),
       ),
     );
+  }
+
+  // Supprime une ligne d'historique ET la transaction correspondante en BDD.
+  Future<void> _confirmDeleteTransaction(Map<String, dynamic> tx) async {
+    bool confirm =
+        await showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF1C1C1E),
+            title: const Text(
+              "Supprimer la transaction",
+              style: TextStyle(color: Colors.white),
+            ),
+            content: Text(
+              "Supprimer définitivement cette transaction "
+              "(${tx['instruments']?['name'] ?? 'Inconnu'} • "
+              "${tx['transaction_type']} • "
+              "${tx['date'].toString().split('T')[0]}) ? "
+              "Cette action est irréversible.",
+              style: const TextStyle(color: Colors.white70),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.blueAccent,
+                ),
+                child: const Text("Annuler"),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  "Supprimer",
+                  style: TextStyle(
+                    color: Colors.redAccent,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirm) return;
+
+    try {
+      await supabase.from('transactions').delete().eq('id', tx['id']);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Transaction supprimée."),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+      _loadPortfolioData();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Erreur lors de la suppression : $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
@@ -4179,148 +4379,162 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
-   Future<void> _importCSV() async {
-    setState(() {
-      _isImporting = true;
-    });
+ Future<void> _importCSV() async {
+  setState(() {
+    _isImporting = true;
+  });
 
-    try {
-      fp.FilePickerResult? result = await fp.FilePicker.platform.pickFiles(
-        type: fp.FileType.custom,
-        allowedExtensions: ['csv'],
-        withData: true,
-      );
+  try {
+    fp.FilePickerResult? result = await fp.FilePicker.platform.pickFiles(
+      type: fp.FileType.custom,
+      allowedExtensions: ['csv'],
+      withData: true,
+    );
 
-      if (result != null && result.files.first.bytes != null) {
-        final csvString = utf8.decode(result.files.first.bytes!);
+    if (result != null && result.files.first.bytes != null) {
+      final csvString = utf8.decode(result.files.first.bytes!);
 
-        List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
-          fieldDelimiter: ',',
-          eol: '\n',
-        ).convert(csvString);
+      // CORRECTION 1 : Détection automatique du séparateur (ou force le ';')
+      String delimiter = csvString.contains(';') ? ';' : ',';
 
-        if (rowsAsListOfValues.isEmpty) return;
+      List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
+        fieldDelimiter: delimiter,
+        eol: '\n', // Attention : certains CSV Windows ont '\r\n'
+      ).convert(csvString);
 
-        if (rowsAsListOfValues.first[0].toString().toLowerCase().contains('date')) {
-          rowsAsListOfValues.removeAt(0);
+      if (rowsAsListOfValues.isEmpty) return;
+
+      if (rowsAsListOfValues.first[0].toString().toLowerCase().contains('date')) {
+        rowsAsListOfValues.removeAt(0);
+      }
+
+      final dateFormat = DateFormat('dd/MM/yyyy');
+      const validTypes = ['Buy', 'Sell', 'Deposit', 'Dividend', 'Withdrawal'];
+
+      Map<String, dynamic> accountCache = {
+        for (var acc in _accountsList) 
+          (acc['name'] as String).toLowerCase(): acc['id']
+      };
+      
+      // CORRECTION 3 : Clé de cache composée (accountId_nomInstrument)
+      Map<String, dynamic> instrumentCache = {
+        for (var inst in _instruments) 
+          "${inst['account_id']}_${(inst['name'] as String).toLowerCase()}": inst['id']
+      };
+
+      int importedCount = 0;
+      int skippedCount = 0;
+
+      for (var i = 0; i < rowsAsListOfValues.length; i++) {
+        var row = rowsAsListOfValues[i];
+        
+        if (row.length < 8) {
+          print('Ligne $i ignorée : pas assez de colonnes (${row.length})');
+          skippedCount++;
+          continue;
         }
 
-        final dateFormat = DateFormat('dd/MM/yyyy');
-        const validTypes = ['Buy', 'Sell', 'Deposit', 'Dividend', 'Withdrawal'];
+        try {
+          // Utilisation de .split(' ').first pour ignorer l'heure si présente
+          String dateStr = row[0].toString().trim().split(' ').first;
+          DateTime parsedDate = dateFormat.parse(dateStr);
+          
+          String name = row[1].toString().trim();
+          String tickerIsin = row[2].toString().trim();
+          String txType = row[3].toString().trim();
+          double quantity = double.tryParse(row[4].toString().trim().replaceAll(',', '.')) ?? 0;
+          double unitPrice = double.tryParse(row[5].toString().trim().replaceAll(',', '.')) ?? 0;
+          double fees = double.tryParse(row[6].toString().trim().replaceAll(',', '.')) ?? 0;
+          String accountName = row[7].toString().trim();
 
-        // Caches locales : nom (minuscule) -> id, pour éviter les doublons
-        Map<String, dynamic> accountCache = {
-          for (var acc in _accountsList) (acc['name'] as String).toLowerCase(): acc['id']
-        };
-        Map<String, dynamic> instrumentCache = {
-          for (var inst in _instruments) (inst['name'] as String).toLowerCase(): inst['id']
-        };
-
-        int importedCount = 0;
-        int skippedCount = 0;
-
-        for (var row in rowsAsListOfValues) {
-          if (row.length < 8) {
+          if (name.isEmpty || accountName.isEmpty) {
+            print('Ligne $i ignorée : Nom ou Compte vide');
             skippedCount++;
             continue;
           }
 
-          try {
-            DateTime parsedDate = dateFormat.parse(row[0].toString().trim());
-            String name = row[1].toString().trim();
-            String tickerIsin = row[2].toString().trim();
-            String txType = row[3].toString().trim();
-            double quantity =
-                double.tryParse(row[4].toString().replaceAll(',', '.')) ?? 0;
-            double unitPrice =
-                double.tryParse(row[5].toString().replaceAll(',', '.')) ?? 0;
-            double fees =
-                double.tryParse(row[6].toString().replaceAll(',', '.')) ?? 0;
-            String accountName = row[7].toString().trim();
-
-            if (name.isEmpty || accountName.isEmpty) {
-              skippedCount++;
-              continue;
-            }
-
-            String normalizedType = validTypes.firstWhere(
-              (t) => t.toLowerCase() == txType.toLowerCase(),
-              orElse: () => 'Buy',
-            );
-
-            // 1. Compte : récupération ou création
-            dynamic accountId = accountCache[accountName.toLowerCase()];
-            if (accountId == null) {
-              final newAccount = await supabase
-                  .from('accounts')
-                  .insert({'name': accountName})
-                  .select()
-                  .single();
-              accountId = newAccount['id'];
-              accountCache[accountName.toLowerCase()] = accountId;
-            }
-
-            // 2. Instrument : récupération ou création (rattaché au compte)
-            dynamic instrumentId = instrumentCache[name.toLowerCase()];
-            if (instrumentId == null) {
-              final newInstrument = await supabase
-                  .from('instruments')
-                  .insert({
-                    'name': name,
-                    'ticker_isin': tickerIsin.toUpperCase(),
-                    'account_id': accountId,
-                    'is_watchlist': false,
-                  })
-                  .select()
-                  .single();
-              instrumentId = newInstrument['id'];
-              instrumentCache[name.toLowerCase()] = instrumentId;
-            }
-
-            // 3. Transaction
-            await supabase.from('transactions').insert({
-              'instrument_id': instrumentId,
-              'transaction_type': normalizedType,
-              'quantity': quantity,
-              'unit_price': unitPrice,
-              'fees': fees,
-              'date': parsedDate.toIso8601String(),
-            });
-
-            importedCount++;
-          } catch (e) {
-            skippedCount++;
-            continue;
-          }
-        }
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '$importedCount transaction(s) importée(s)'
-                '${skippedCount > 0 ? ', $skippedCount ligne(s) ignorée(s)' : ''} !',
-              ),
-            ),
+          String normalizedType = validTypes.firstWhere(
+            (t) => t.toLowerCase() == txType.toLowerCase(),
+            orElse: () => 'Buy',
           );
-        }
 
-        _loadPortfolioData();
+          // 1. Compte : récupération ou création
+          dynamic accountId = accountCache[accountName.toLowerCase()];
+          if (accountId == null) {
+            final newAccount = await supabase
+                .from('accounts')
+                .insert({'name': accountName})
+                .select()
+                .single();
+            accountId = newAccount['id'];
+            accountCache[accountName.toLowerCase()] = accountId;
+          }
+
+          // 2. Instrument : récupération ou création avec clé composite
+          String instrumentCacheKey = "${accountId}_${name.toLowerCase()}";
+          dynamic instrumentId = instrumentCache[instrumentCacheKey];
+          
+          if (instrumentId == null) {
+            final newInstrument = await supabase
+                .from('instruments')
+                .insert({
+                  'name': name,
+                  'ticker_isin': tickerIsin.toUpperCase(),
+                  'account_id': accountId,
+                  'is_watchlist': false,
+                })
+                .select()
+                .single();
+            instrumentId = newInstrument['id'];
+            instrumentCache[instrumentCacheKey] = instrumentId;
+          }
+
+          // 3. Transaction
+          await supabase.from('transactions').insert({
+            'instrument_id': instrumentId,
+            'transaction_type': normalizedType,
+            'quantity': quantity,
+            'unit_price': unitPrice,
+            'fees': fees,
+            'date': parsedDate.toIso8601String(),
+          });
+
+          importedCount++;
+        } catch (e) {
+          // CORRECTION 2 : On affiche l'erreur dans la console pour comprendre
+          print('Erreur ligne $i: $e');
+          print('Contenu de la ligne : $row');
+          skippedCount++;
+          continue;
+        }
       }
-    } catch (e) {
+
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Erreur : $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '$importedCount transaction(s) importée(s)'
+              '${skippedCount > 0 ? ', $skippedCount ligne(s) ignorée(s)' : ''} !',
+            ),
+          ),
+        );
       }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isImporting = false;
-        });
-      }
+
+      _loadPortfolioData();
+    }
+  } catch (e) {
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Erreur globale : $e')));
+    }
+  } finally {
+    if (mounted) {
+      setState(() {
+        _isImporting = false;
+      });
     }
   }
-  // Fonction fictive pour l'exemple : mets ici ton code pour recharger tes données
+}// Fonction fictive pour l'exemple : mets ici ton code pour recharger tes données
   void _refreshDonnees() {
     setState(() {
       // Recharger les données depuis Supabase
@@ -4563,7 +4777,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                     IconButton(
                                       icon: const Icon(
                                         Icons.delete_outline,
-                                        color: Colors.redAccent,
+                                        color: Colors.white,
                                       ),
                                       onPressed: () =>
                                           _confirmDeleteAccount(acc),
@@ -4574,7 +4788,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                             );
                           },
                         ),
-                  // --- ONGLET 3 : HISTORIQUE (AVEC CLIC DE MODIFICATION) ---
+                  // --- ONGLET 3 : HISTORIQUE (AVEC CLIC DE MODIFICATION + SUPPRESSION) ---
                   ListView.builder(
                     padding: const EdgeInsets.all(8),
                     itemCount: _history.length,
@@ -4621,15 +4835,31 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                           ),
                           subtitle: Text(
                             "${tx['transaction_type']} • ${tx['date'].toString().split('T')[0]}",
-                            style: TextStyle(color: typeColor.withOpacity(0.8)),
+                            style: TextStyle(color: typeColor),
                           ),
-                          trailing: Text(
-                            "${tx['quantity']} x ${tx['unit_price']} €",
-                            style: TextStyle(
-                              color: typeColor,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
-                            ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                "${tx['quantity']} x ${tx['unit_price']} €",
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.redAccent,
+                                  size: 20,
+                                ),
+                                onPressed: () =>
+                                    _confirmDeleteTransaction(tx),
+                              ),
+                            ],
                           ),
                         ),
                       );
@@ -5349,6 +5579,126 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 ),
               ),
             ),
+    );
+  }
+}
+
+
+class UpdatePasswordScreen extends StatefulWidget {
+  const UpdatePasswordScreen({super.key});
+
+  @override
+  State<UpdatePasswordScreen> createState() => _UpdatePasswordScreenState();
+}
+
+class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
+  final _newPasswordController = TextEditingController();
+  bool _isLoading = false;
+
+  @override
+  void dispose() {
+    _newPasswordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _updatePassword() async {
+    final newPassword = _newPasswordController.text.trim();
+    if (newPassword.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Le mot de passe doit faire au moins 6 caractères.')),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      // Mise à jour effective du mot de passe dans Supabase
+      await Supabase.instance.client.auth.updateUser(
+        UserAttributes(password: newPassword),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Mot de passe mis à jour avec succès !'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        // Redirige vers ton écran principal ou de connexion
+        Navigator.of(context).pushReplacementNamed('/home'); 
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('Nouveau mot de passe', style: TextStyle(color: Colors.white)),
+        backgroundColor: Colors.black,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Entre ton nouveau mot de passe',
+                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _newPasswordController,
+                  obscureText: true,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Nouveau mot de passe',
+                    labelStyle: TextStyle(color: Colors.grey[400]),
+                    filled: true,
+                    fillColor: Colors.grey[900],
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _updatePassword,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.greenAccent,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: _isLoading
+                        ? const CircularProgressIndicator(color: Colors.black)
+                        : const Text('Valider le nouveau mot de passe',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
