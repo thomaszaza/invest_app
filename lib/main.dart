@@ -19,7 +19,10 @@ const List<String> kCategories = ['Croissance', 'Rendement', 'Opportunité'];
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  await Supabase.initialize(
+    url: 'https://pfzsgikdqpnbyhaokdwn.supabase.co',
+    anonKey: 'sb_publishable_owIZox6AqByWrqOiE_bbhQ_opZNPqaG',
+  );
 
   await NotificationService.init();
 
@@ -53,24 +56,28 @@ class AuthGate extends StatelessWidget {
     return StreamBuilder<AuthState>(
       stream: Supabase.instance.client.auth.onAuthStateChange,
       builder: (context, snapshot) {
-        if (snapshot.hasData && snapshot.data!.event == AuthChangeEvent.passwordRecovery) {
+        final currentEvent = snapshot.data?.event;
+
+        // 1. PRIORITÉ ABSOLUE : Si on est en train de réinitialiser le mot de passe
+        if (currentEvent == AuthChangeEvent.passwordRecovery) {
           return const UpdatePasswordScreen();
         }
+
+        // 2. Vérification de la session active
         final session =
             snapshot.data?.session ??
             Supabase.instance.client.auth.currentSession;
 
         if (session != null) {
-          // Utilisateur connecté -> Envoi vers l'app principale
+          // Si l'utilisateur est connecté normalement
           return const MainNavigationScreen();
         } else {
-          // Non connecté -> Envoi vers l'écran de connexion / inscription
+          // Non connecté
           return const LoginScreen();
         }
       },
     );
   }
-
 }
 
 /// ==========================================
@@ -133,40 +140,45 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted) setState(() => _isLoading = false);
     }
   }
-  Future<void> _resetPassword() async {
-  final email = _emailController.text.trim();
-  if (email.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Entre ton email d’abord pour réinitialiser ton mot de passe.'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-    return;
-  }
 
-  try {
-    // Envoi de l'e-mail de réinitialisation (adapte le deep link selon ta config)
-    await Supabase.instance.client.auth.resetPasswordForEmail(
-      email,
-      redirectTo: 'https://thomaszaza.github.io/zaza-invest/reset-callback',
-    );
-    if (mounted) {
+  Future<void> _resetPassword() async {
+    final email = _emailController.text.trim();
+    if (email.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('E-mail de réinitialisation envoyé ! Vérifie ta boîte mail.'),
-          backgroundColor: Colors.green,
+          content: Text(
+            'Entre ton email d’abord pour réinitialiser ton mot de passe.',
+          ),
+          backgroundColor: Colors.orange,
         ),
       );
+      return;
     }
-  } catch (e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
+
+    try {
+      // Envoi de l'e-mail de réinitialisation (adapte le deep link selon ta config)
+      await Supabase.instance.client.auth.resetPasswordForEmail(
+        email,
+        redirectTo: 'https://thomaszaza.github.io/zaza-invest/',
       );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'E-mail de réinitialisation envoyé ! Vérifie ta boîte mail.',
+            ),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
+        );
+      }
     }
   }
-}
 
   @override
   Widget build(BuildContext context) {
@@ -277,19 +289,22 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   // À placer juste après le TextField du mot de passe et avant le SizedBox(height: 28)
-if (!_isSignUp) ...[
-  Align(
-    alignment: Alignment.centerRight,
-    child: TextButton(
-      onPressed: _resetPassword,
-      child: Text(
-        'Mot de passe oublié ?',
-        style: TextStyle(color: Colors.grey[400], fontSize: 13),
-      ),
-    ),
-  ),
-  const SizedBox(height: 12),
-],
+                  if (!_isSignUp) ...[
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: _resetPassword,
+                        child: Text(
+                          'Mot de passe oublié ?',
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   const SizedBox(height: 28),
 
                   // Bouton Valider
@@ -386,9 +401,7 @@ class NotificationService {
     );
     try {
       await _plugin.show(id, title, body, details);
-    } catch (e) {
-      
-    }
+    } catch (e) {}
   }
 }
 
@@ -428,17 +441,102 @@ class PriceCache {
 
 class PriceService {
   static final supabase = Supabase.instance.client;
+  static Future<Map<String, dynamic>?> fetchYahooFundamentals(
+    String instrumentName, {
+    String? isin,
+  }) async {
+    String? symbol;
+
+    // 1. Détection du symbole
+    if (instrumentName.startsWith('EPA:')) {
+      symbol = '${instrumentName.replaceAll('EPA:', '')}.PA';
+    } else if (isin != null && isin.isNotEmpty && isin != 'CASH') {
+      // Si c'est déjà un ticker (contient un point comme AI.PA, ou court sans être un ISIN de 12 caractères)
+      if (isin.contains('.') || isin.length != 12) {
+        symbol = isin;
+      } else {
+        // Sinon, c'est un ISIN, on interroge la recherche via le proxy
+        try {
+          final searchUrl = Uri.parse(
+            'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent('https://query2.finance.yahoo.com/v1/finance/search?q=$isin')}',
+          );
+          final res = await http.get(
+            searchUrl,
+            headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+          );
+          if (res.statusCode == 200) {
+            final data = json.decode(res.body);
+            if (data['quotes'] != null && data['quotes'].isNotEmpty) {
+              symbol = data['quotes'][0]['symbol'];
+            }
+          }
+        } catch (e) {
+          print("Erreur résolution ticker : $e");
+        }
+      }
+    }
+
+    if (symbol == null || symbol.isEmpty) {
+      print("Impossible de déterminer le symbole pour $instrumentName ($isin)");
+      return null;
+    }
+
+    print("Symbole Yahoo résolu : $symbol");
+
+    // 2. Appel des fondamentaux via le proxy Supabase
+    final targetUrl =
+        'https://query1.finance.yahoo.com/v10/finance/quoteSummary/$symbol?modules=summaryDetail,price';
+    final proxyUrl = Uri.parse(
+      'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent(targetUrl)}',
+    );
+
+    try {
+      final response = await http.get(
+        proxyUrl,
+        headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+      );
+
+      print("Code HTTP Yahoo quoteSummary : ${response.statusCode}");
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final result = data['quoteSummary']?['result']?[0];
+        if (result == null) return null;
+
+        final summary = result['summaryDetail'] ?? {};
+        final price = result['price'] ?? {};
+
+        double? getRaw(dynamic field) => field != null && field['raw'] != null
+            ? (field['raw'] as num).toDouble()
+            : null;
+
+        return {
+          'dividendYield': getRaw(summary['dividendYield']) != null
+              ? getRaw(summary['dividendYield'])! * 100
+              : null,
+          'trailingPE': getRaw(summary['trailingPE']),
+          'forwardPE': getRaw(summary['forwardPE']),
+          'marketCap': getRaw(price['marketCap']),
+          'currency': price['currencySymbol'] ?? '€',
+        };
+      } else {
+        print("Erreur réponse Yahoo : ${response.body}");
+      }
+    } catch (e) {
+      print("Erreur fetchYahooFundamentals : $e");
+    }
+
+    return null;
+  }
 
   static Future<double?> fetchLivePrice(
     String instrumentName,
     String isin,
     dynamic instrumentId,
   ) async {
-    // 1. Vérifier le cache (si présent, retour immédiat)
     double? cached = PriceCache.get(instrumentId.toString());
     if (cached != null) return cached;
 
-    // 2. Vérifier prix manuel dans Supabase
     try {
       final today = DateTime.now().toIso8601String().split('T')[0];
       final manualList = await supabase
@@ -455,13 +553,10 @@ class PriceService {
           return p;
         }
       }
-    } catch (e) {
-     
-    }
+    } catch (e) {}
 
     double? finalPrice;
 
-    // 3. Logique Yahoo Finance / ISIN
     try {
       String symbol = "";
       if (instrumentName.startsWith('EPA:')) {
@@ -501,11 +596,8 @@ class PriceService {
           finalPrice = (price as num).toDouble();
         }
       }
-    } catch (e) {
-      
-    }
+    } catch (e) {}
 
-    // 4. Stocker dans le cache et retourner
     if (finalPrice != null && !finalPrice.isNaN) {
       PriceCache.set(instrumentId.toString(), finalPrice);
       return finalPrice;
@@ -578,9 +670,7 @@ class PriceService {
           }
         }
       }
-    } catch (e) {
-      
-    }
+    } catch (e) {}
 
     if (history.isNotEmpty) {
       PriceCache.setHistory(cacheKey, history);
@@ -698,9 +788,7 @@ class AlertsService {
               .eq('id', alert['id']);
         }
       }
-    } catch (e) {
-      
-    }
+    } catch (e) {}
   }
 
   static Future<void> createAlert(
@@ -713,7 +801,6 @@ class AlertsService {
 
     // 2. On vérifie s'il est bien connecté (sécurité)
     if (user == null) {
-     
       return; // On arrête la fonction ici
     }
 
@@ -727,11 +814,9 @@ class AlertsService {
         'active': true,
         'triggered': false,
       });
-    
     } catch (e) {}
   }
 } // <--- ON FERME LA CLASSE ALERTSERVICE ICI
-
 
 // ------------------------------------------------------------------
 // LA FONCTION D'INTERFACE EST MAINTENANT EN DEHORS DE LA CLASSE
@@ -743,7 +828,7 @@ void showCreateAlertDialog(
 ) {
   final TextEditingController thresholdController = TextEditingController();
   String direction = 'above';
-  
+
   showDialog(
     context: context,
     builder: (context) => StatefulBuilder(
@@ -805,8 +890,8 @@ void showCreateAlertDialog(
           TextButton(
             onPressed: () => Navigator.pop(context),
             style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
+              foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
+            ),
             child: const Text("Annuler"),
           ),
           TextButton(
@@ -833,7 +918,10 @@ void showCreateAlertDialog(
             },
             child: const Text(
               "Créer l'alerte",
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.blueAccent,
+              ),
             ),
           ),
         ],
@@ -841,6 +929,7 @@ void showCreateAlertDialog(
     ),
   );
 }
+
 // ==========================================
 // 1. L'ÉCRAN PRINCIPAL (La barre de navigation)
 // ==========================================
@@ -912,8 +1001,8 @@ class PositionsScreen extends StatefulWidget {
 class _PositionsScreenState extends State<PositionsScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
-  
-  List<Map<String, dynamic>> _allPositions = []; 
+
+  List<Map<String, dynamic>> _allPositions = [];
   List<Map<String, dynamic>> _positions = [];
   List<String> _accounts = ['Tous les comptes'];
   String _selectedAccount = 'Tous les comptes';
@@ -933,7 +1022,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
     List<Map<String, dynamic>> filtered = [];
 
     for (var pos in _allPositions) {
-      if (_selectedAccount == 'Tous les comptes' || pos['account'] == _selectedAccount) {
+      if (_selectedAccount == 'Tous les comptes' ||
+          pos['account'] == _selectedAccount) {
         filtered.add(pos);
         if (!pos['pru'].isNaN && !pos['quantity'].isNaN) {
           newInvested += (pos['pru'] * pos['quantity']);
@@ -942,7 +1032,10 @@ class _PositionsScreenState extends State<PositionsScreen> {
       }
     }
 
-    filtered.sort((a, b) => (b['totalValue'] as double).compareTo(a['totalValue'] as double));
+    filtered.sort(
+      (a, b) =>
+          (b['totalValue'] as double).compareTo(a['totalValue'] as double),
+    );
 
     setState(() {
       _positions = filtered;
@@ -958,7 +1051,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
       final viewData = await supabase.from('portfolio_view').select('*');
 
       List<Map<String, dynamic>> validPositions = [];
-      Set<String> foundAccounts = {'Tous les comptes'}; 
+      Set<String> foundAccounts = {'Tous les comptes'};
 
       for (var row in viewData) {
         String nameStr = row['name'].toString().toLowerCase();
@@ -966,8 +1059,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
         if (!nameStr.contains('liquidit') && !nameStr.contains('cash')) {
           double qty = (row['quantity'] ?? 0).toDouble();
           double pru = (row['pru'] ?? 0).toDouble();
-          String accountName = row['account_name'] ?? 'Autre'; 
-          
+          String accountName = row['account_name'] ?? 'Autre';
+
           foundAccounts.add(accountName);
 
           Map<String, dynamic> pos = {
@@ -980,7 +1073,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
             'quantity': qty,
             'pru': pru,
             'currentPrice': null,
-            'totalValue': pru * qty, 
+            'totalValue': pru * qty,
           };
 
           validPositions.add(pos);
@@ -990,7 +1083,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
       if (mounted) {
         _accounts = foundAccounts.toList();
         _allPositions = validPositions;
-        _filterPositions(); 
+        _filterPositions();
         setState(() => _isLoading = false);
       }
 
@@ -1012,9 +1105,11 @@ class _PositionsScreenState extends State<PositionsScreen> {
               setState(() {
                 pos['currentPrice'] = livePrice;
                 pos['totalValue'] = newTotalValue;
-                
-                if (_selectedAccount == 'Tous' || _selectedAccount == pos['account']) {
-                  _totalPortfolioValue = _totalPortfolioValue - oldTotalValue + newTotalValue;
+
+                if (_selectedAccount == 'Tous' ||
+                    _selectedAccount == pos['account']) {
+                  _totalPortfolioValue =
+                      _totalPortfolioValue - oldTotalValue + newTotalValue;
                 }
               });
             }
@@ -1023,12 +1118,144 @@ class _PositionsScreenState extends State<PositionsScreen> {
       }).toList();
 
       await Future.wait(fetchFutures);
-      
-      if (mounted) _filterPositions();
 
+      if (mounted) _filterPositions();
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  void _showFeedbackDialog(BuildContext context) {
+    final TextEditingController feedbackController = TextEditingController();
+    String feedbackType = 'Bug';
+    bool isSending = false;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: const Text(
+            "Signaler un bug / suggestion",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: RadioListTile<String>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        "Bug",
+                        style: TextStyle(color: Colors.white, fontSize: 13),
+                      ),
+                      value: 'Bug',
+                      groupValue: feedbackType,
+                      onChanged: (v) => setDialogState(() => feedbackType = v!),
+                    ),
+                  ),
+                  Expanded(
+                    child: RadioListTile<String>(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text(
+                        "Suggestion",
+                        style: TextStyle(color: Colors.white, fontSize: 13),
+                      ),
+                      value: 'Suggestion',
+                      groupValue: feedbackType,
+                      onChanged: (v) => setDialogState(() => feedbackType = v!),
+                    ),
+                  ),
+                ],
+              ),
+              TextField(
+                controller: feedbackController,
+                maxLines: 4,
+                style: const TextStyle(color: Colors.white),
+                decoration: const InputDecoration(
+                  hintText: "Décris le problème ou ton idée...",
+                  hintStyle: TextStyle(color: Colors.white54),
+                  enabledBorder: UnderlineInputBorder(
+                    borderSide: BorderSide(color: Colors.white),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isSending ? null : () => Navigator.pop(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
+              child: const Text("Annuler"),
+            ),
+            TextButton(
+              onPressed: isSending
+                  ? null
+                  : () async {
+                      if (feedbackController.text.trim().isEmpty) return;
+                      setDialogState(() => isSending = true);
+                      try {
+                        await Supabase.instance.client.functions.invoke(
+                          'send_feedback',
+                          body: {
+                            'type': feedbackType,
+                            'message': feedbackController.text.trim(),
+                            'user_email':
+                                Supabase
+                                    .instance
+                                    .client
+                                    .auth
+                                    .currentUser
+                                    ?.email ??
+                                'inconnu',
+                          },
+                        );
+                        if (context.mounted) {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                "Merci, ton message a été envoyé !",
+                              ),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                      } catch (e) {
+                        setDialogState(() => isSending = false);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text("Erreur d'envoi : $e"),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                        }
+                      }
+                    },
+              child: isSending
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.blueAccent,
+                      ),
+                    )
+                  : const Text(
+                      "Envoyer",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blueAccent,
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1043,7 +1270,9 @@ class _PositionsScreenState extends State<PositionsScreen> {
       }
     }
 
-    Color globalColor = globalPerfAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
+    Color globalColor = globalPerfAbs >= 0
+        ? Colors.greenAccent
+        : Colors.redAccent;
     String globalSign = globalPerfAbs >= 0 ? "+" : "";
 
     return Scaffold(
@@ -1051,16 +1280,27 @@ class _PositionsScreenState extends State<PositionsScreen> {
       appBar: AppBar(
         title: const Text(
           'Positions',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 24),
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+            fontSize: 24,
+          ),
         ),
         backgroundColor: Colors.black,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.bug_report_outlined, color: Colors.white),
+            tooltip: 'Signaler un bug / suggestion',
+            onPressed: () => _showFeedbackDialog(context),
+          ),
           IconButton(
             icon: const Icon(Icons.add, color: Colors.white),
             onPressed: () {
               Navigator.push(
                 context,
-                MaterialPageRoute(builder: (context) => const AddTransactionScreen()),
+                MaterialPageRoute(
+                  builder: (context) => const AddTransactionScreen(),
+                ),
               );
             },
           ),
@@ -1070,43 +1310,61 @@ class _PositionsScreenState extends State<PositionsScreen> {
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : Column(
               children: [
-Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 15,
+                  ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.center, // Centré verticalement
+                    crossAxisAlignment:
+                        CrossAxisAlignment.center, // Centré verticalement
                     children: [
                       // 1. Le capital et la performance (à gauche maintenant)
                       Expanded(
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start, // Aligné à gauche
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start, // Aligné à gauche
                           children: [
                             const Text(
                               "Capital Actuel",
-                              style: TextStyle(color: Colors.white54, fontSize: 13),
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 13,
+                              ),
                             ),
                             const SizedBox(height: 2),
                             Text(
                               "${_totalPortfolioValue.toStringAsFixed(2).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (Match m) => '${m[1]} ').replaceFirst('.', ',')} €",
-                              style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                              ),
                               textAlign: TextAlign.left,
                               overflow: TextOverflow.ellipsis,
                             ),
                             const SizedBox(height: 6),
                             Text(
                               "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
-                              style: TextStyle(color: globalColor, fontSize: 14, fontWeight: FontWeight.bold),
+                              style: TextStyle(
+                                color: globalColor,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
                               textAlign: TextAlign.left,
                             ),
                           ],
                         ),
                       ),
-                      
+
                       const SizedBox(width: 10), // Petit espace pour éviter que le texte touche le bouton
-                      
                       // 2. La liste déroulante (à droite maintenant)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: const Color(0xFF1C1C1E),
                           borderRadius: BorderRadius.circular(10),
@@ -1115,12 +1373,15 @@ Container(
                           child: DropdownButton<String>(
                             value: _selectedAccount,
                             dropdownColor: const Color(0xFF2C2C2E),
-                            icon: const Icon(Icons.arrow_drop_down, color: Colors.white),
-                            isExpanded: false, 
+                            icon: const Icon(
+                              Icons.arrow_drop_down,
+                              color: Colors.white,
+                            ),
+                            isExpanded: false,
                             style: const TextStyle(
-                              color: Colors.white, 
-                              fontSize: 16, 
-                              fontWeight: FontWeight.bold
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
                             ),
                             items: _accounts.map((String account) {
                               return DropdownMenuItem<String>(
@@ -1129,7 +1390,8 @@ Container(
                               );
                             }).toList(),
                             onChanged: (String? newValue) {
-                              if (newValue != null && newValue != _selectedAccount) {
+                              if (newValue != null &&
+                                  newValue != _selectedAccount) {
                                 setState(() => _selectedAccount = newValue);
                                 _filterPositions();
                               }
@@ -1147,7 +1409,10 @@ Container(
                     backgroundColor: const Color(0xFF1C1C1E),
                     child: ListView.builder(
                       physics: const AlwaysScrollableScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
                       itemCount: _positions.length,
                       itemBuilder: (context, index) {
                         final pos = _positions[index];
@@ -1157,7 +1422,10 @@ Container(
                         Color valueColor = Colors.white;
                         String perfText = "";
 
-                        if (currentPrice > 0 && pru > 0 && !currentPrice.isNaN && !pru.isNaN) {
+                        if (currentPrice > 0 &&
+                            pru > 0 &&
+                            !currentPrice.isNaN &&
+                            !pru.isNaN) {
                           double perfRatio = ((currentPrice - pru) / pru) * 100;
                           String sign = perfRatio >= 0 ? "+" : "";
                           perfText = "$sign${perfRatio.toStringAsFixed(2)}%";
@@ -1171,41 +1439,61 @@ Container(
 
                         return Card(
                           color: const Color(0xFF1C1C1E),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                           margin: const EdgeInsets.only(bottom: 6),
                           child: InkWell(
                             borderRadius: BorderRadius.circular(10),
                             onTap: () => Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) => InstrumentDetailScreen(instrument: pos),
+                                builder: (context) =>
+                                    InstrumentDetailScreen(instrument: pos),
                               ),
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(8.0),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
                                 children: [
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(
                                           pos['name'],
-                                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 16),
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                            fontSize: 16,
+                                          ),
                                         ),
                                         const SizedBox(height: 6),
                                         Text(
                                           "Qté: ${pos['quantity'].toStringAsFixed(2)}",
-                                          style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 13,
+                                          ),
                                         ),
                                         Text(
                                           "PRU: ${pru.toStringAsFixed(2)} €",
-                                          style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 13,
+                                          ),
                                         ),
                                         Text(
-                                          pos['currentPrice'] != null ? "Actuel: ${currentPrice.toStringAsFixed(2)} €" : "Non coté",
-                                          style: const TextStyle(color: Colors.white54, fontSize: 13),
+                                          pos['currentPrice'] != null
+                                              ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
+                                              : "Non coté",
+                                          style: const TextStyle(
+                                            color: Colors.white54,
+                                            fontSize: 13,
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -1214,21 +1502,33 @@ Container(
                                     crossAxisAlignment: CrossAxisAlignment.end,
                                     children: [
                                       Text(
-                                        pos['currentPrice'] != null ? "${pos['totalValue'].toStringAsFixed(2)} €" : "-- €",
-                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: valueColor),
+                                        pos['currentPrice'] != null
+                                            ? "${pos['totalValue'].toStringAsFixed(2)} €"
+                                            : "-- €",
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 16,
+                                          color: valueColor,
+                                        ),
                                       ),
                                       const SizedBox(height: 6),
                                       if (perfText.isNotEmpty)
                                         Text(
                                           perfText,
-                                          style: TextStyle(color: valueColor, fontSize: 13, fontWeight: FontWeight.bold),
+                                          style: TextStyle(
+                                            color: valueColor,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
                                         ),
                                       if (currentPrice > 0 && pru > 0) ...[
                                         const SizedBox(height: 2),
                                         Text(
                                           "PV : ${((currentPrice - pru) * pos['quantity']) >= 0 ? '+' : ''}${((currentPrice - pru) * pos['quantity']).toStringAsFixed(2)} €",
                                           style: TextStyle(
-                                            color: (currentPrice - pru) >= 0 ? Colors.greenAccent : Colors.redAccent,
+                                            color: (currentPrice - pru) >= 0
+                                                ? Colors.greenAccent
+                                                : Colors.redAccent,
                                             fontSize: 13,
                                             fontWeight: FontWeight.bold,
                                           ),
@@ -1239,8 +1539,13 @@ Container(
                                   IconButton(
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(),
-                                    icon: const Icon(Icons.notifications_none, color: Colors.white38, size: 20),
-                                    onPressed: () => showCreateAlertDialog(context, pos),
+                                    icon: const Icon(
+                                      Icons.notifications_none,
+                                      color: Colors.white38,
+                                      size: 20,
+                                    ),
+                                    onPressed: () =>
+                                        showCreateAlertDialog(context, pos),
                                   ),
                                 ],
                               ),
@@ -1256,6 +1561,7 @@ Container(
     );
   }
 }
+
 // ==========================================
 // 2bis. LA PAGE "WATCHLIST"
 // ==========================================
@@ -1322,7 +1628,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
       await Future.wait(futures);
     } catch (e) {
       // Sécurité : si la base de données ne répond pas, on arrête de charger
-      
+
       if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -1331,6 +1637,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
 
   Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
     final TextEditingController priceController = TextEditingController();
+
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -1354,9 +1661,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
+            style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
             child: const Text("Annuler"),
           ),
           TextButton(
@@ -1364,26 +1669,39 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
               double? newPrice = double.tryParse(
                 priceController.text.replaceAll(',', '.'),
               );
-              if (newPrice != null) {
+              if (newPrice == null) return;
+
+              try {
                 final today = DateTime.now().toIso8601String().split('T')[0];
-                await supabase.from('daily_prices').upsert(
-                  {
-                    'instrument_id': inst['id'],
-                    'date': today,
-                    'price': newPrice,
-                  },
-                  onConflict: 'instrument_id,date',
-                );
+                await supabase.from('daily_prices').upsert({
+                  'instrument_id': inst['id'],
+                  'date': today,
+                  'price': newPrice,
+                }, onConflict: 'instrument_id,date');
 
                 PriceCache.set(inst['id'].toString(), newPrice);
 
-                Navigator.pop(context);
-                _loadWatchlist();
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  _loadWatchlist();
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text("Erreur d'enregistrement : $e"),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
               }
             },
             child: const Text(
               "Enregistrer",
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.blueAccent,
+              ),
             ),
           ),
         ],
@@ -1562,7 +1880,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   bool _isLoading = true;
 
   String _selectedPeriod = '1M';
-  final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
+  final List<String> _periods = ['1D', '1S', '1M', '3M', 'YTD', '1A', 'ALL'];
 
   List<Map<String, dynamic>> _accountsList = [];
   String? _selectedAccountId;
@@ -1736,7 +2054,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         _calculatePieData();
       }
     } catch (e) {
-      
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1836,7 +2153,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
       return totalValue;
     } catch (e) {
-      
       return 0.0;
     }
   }
@@ -1850,13 +2166,18 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     List<Map<String, dynamic>> filteredTx = _allTransactions;
     if (_selectedAccountId != 'ALL') {
       filteredTx = _allTransactions
-          .where((tx) =>
-              tx['instruments'] != null &&
-              tx['instruments']['account_id'].toString() == _selectedAccountId)
+          .where(
+            (tx) =>
+                tx['instruments'] != null &&
+                tx['instruments']['account_id'].toString() ==
+                    _selectedAccountId,
+          )
           .toList();
     }
 
-    if (_selectedPeriod == '1S')
+    if (_selectedPeriod == '1D')
+      startDate = endDate.subtract(const Duration(hours: 24));
+    else if (_selectedPeriod == '1S')
       startDate = endDate.subtract(const Duration(days: 7));
     else if (_selectedPeriod == '1M')
       startDate = endDate.subtract(const Duration(days: 30));
@@ -1890,7 +2211,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     // ---- Historique de prix trié ----
     final Map<String, Map<String, double>> histSource =
-        (_selectedPeriod == '1S' && _yahooIntraday.isNotEmpty)
+        ((_selectedPeriod == '1S' || _selectedPeriod == '1D') &&
+            _yahooIntraday.isNotEmpty)
         ? _yahooIntraday
         : _yahooHistories;
 
@@ -1947,6 +2269,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     Duration chartStep;
     switch (_selectedPeriod) {
+      case '1D':
+        chartStep = const Duration(minutes: 15);
+        break;
       case '1S':
         chartStep = const Duration(hours: 1);
         break;
@@ -1972,7 +2297,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       d.isBefore(endDate) || d.isAtSameMomentAs(endDate);
       d = d.add(chartStep)
     ) {
-      if (_selectedPeriod == '1S') {
+      if (_selectedPeriod == '1S' || _selectedPeriod == '1D') {
         if (d.hour < 9 || d.hour > 17) continue;
         if (d.weekday == DateTime.saturday || d.weekday == DateTime.sunday)
           continue;
@@ -2160,9 +2485,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     List<Map<String, dynamic>> filteredTx = _allTransactions;
     if (_selectedAccountId != null && _selectedAccountId != 'ALL') {
       filteredTx = _allTransactions
-          .where((tx) =>
-              tx['instruments'] != null &&
-              tx['instruments']['account_id'].toString() == _selectedAccountId)
+          .where(
+            (tx) =>
+                tx['instruments'] != null &&
+                tx['instruments']['account_id'].toString() ==
+                    _selectedAccountId,
+          )
           .toList();
     }
 
@@ -2256,8 +2584,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   // Nom du benchmark actuellement sélectionné, pour l'affichage sur le bouton.
   String get _selectedBenchmarkName {
     try {
-      return _benchmarkList
-          .firstWhere((e) => e['id'].toString() == _selectedBenchmarkId)['name'];
+      return _benchmarkList.firstWhere(
+        (e) => e['id'].toString() == _selectedBenchmarkId,
+      )['name'];
     } catch (e) {
       return 'Aucun Benchmark';
     }
@@ -2300,8 +2629,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         b['name'],
                         style: TextStyle(
                           color: Colors.white,
-                          fontWeight:
-                              selected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: selected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                         ),
                       ),
                       trailing: selected
@@ -2618,6 +2948,27 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                               .toString()
                                               .padLeft(2, '0');
 
+                                          if (_selectedPeriod == '1D') {
+                                            String hour = d.hour
+                                                .toString()
+                                                .padLeft(2, '0');
+                                            String min = d.minute
+                                                .toString()
+                                                .padLeft(2, '0');
+                                            return Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 8.0,
+                                              ),
+                                              child: Text(
+                                                '$hour:$min',
+                                                style: const TextStyle(
+                                                  color: Colors.white54,
+                                                  fontSize: 11,
+                                                ),
+                                              ),
+                                            );
+                                          }
+
                                           if (_selectedPeriod == 'ALL' ||
                                               _selectedPeriod == '1A') {
                                             return Padding(
@@ -2678,62 +3029,75 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                   ),
                                 ),
                                 borderData: FlBorderData(show: false),
-lineTouchData: LineTouchData(
-  touchTooltipData: LineTouchTooltipData(
-    getTooltipItems: (touchedSpots) {
-      String formattedDate = "";
-      if (touchedSpots.isNotEmpty) {
-        int index = touchedSpots.first.x.toInt();
-        if (index < _chartDates.length) {
-          DateTime parsedDate = DateTime.parse(_chartDates[index]);
-          formattedDate = DateFormat('dd/MM/yyyy').format(parsedDate);
-        }
-      }
+                                lineTouchData: LineTouchData(
+                                  touchTooltipData: LineTouchTooltipData(
+                                    getTooltipItems: (touchedSpots) {
+                                      String formattedDate = "";
+                                      if (touchedSpots.isNotEmpty) {
+                                        int index = touchedSpots.first.x
+                                            .toInt();
+                                        if (index < _chartDates.length) {
+                                          DateTime parsedDate = DateTime.parse(
+                                            _chartDates[index],
+                                          );
+                                          formattedDate = DateFormat(
+                                            'dd/MM/yyyy',
+                                          ).format(parsedDate);
+                                        }
+                                      }
 
-      return touchedSpots.map((spot) {
-        bool isBenchmark = spot.barIndex == 1;
-        bool isFirst = spot == touchedSpots.first;
+                                      return touchedSpots.map((spot) {
+                                        bool isBenchmark = spot.barIndex == 1;
+                                        bool isFirst =
+                                            spot == touchedSpots.first;
 
-        String valStr = _showPercent
-            ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
-            : "${spot.y.toStringAsFixed(2)} €";
+                                        String valStr = _showPercent
+                                            ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
+                                            : "${spot.y.toStringAsFixed(2)} €";
 
-        Color valueColor;
-        if (isBenchmark) {
-          valueColor = Colors.purpleAccent;
-        } else {
-          valueColor = _periodPerformanceAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
-        }
+                                        Color valueColor;
+                                        if (isBenchmark) {
+                                          valueColor = Colors.purpleAccent;
+                                        } else {
+                                          valueColor =
+                                              _periodPerformanceAbs >= 0
+                                              ? Colors.greenAccent
+                                              : Colors.redAccent;
+                                        }
 
-        List<TextSpan> children = [];
+                                        List<TextSpan> children = [];
 
-        if (isFirst) {
-          children.add(
-            TextSpan(
-              text: "$formattedDate\n",
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          );
-        }
+                                        if (isFirst) {
+                                          children.add(
+                                            TextSpan(
+                                              text: "$formattedDate\n",
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          );
+                                        }
 
-        children.add(
-          TextSpan(
-            text: valStr,
-            style: TextStyle(
-              color: valueColor,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-        );
+                                        children.add(
+                                          TextSpan(
+                                            text: valStr,
+                                            style: TextStyle(
+                                              color: valueColor,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        );
 
-        return LineTooltipItem('', const TextStyle(), children: children);
-      }).toList();
-    },
-  ),
-),
+                                        return LineTooltipItem(
+                                          '',
+                                          const TextStyle(),
+                                          children: children,
+                                        );
+                                      }).toList();
+                                    },
+                                  ),
+                                ),
                                 lineBarsData: [
                                   LineChartBarData(
                                     spots: activeChartData,
@@ -2779,7 +3143,7 @@ lineTouchData: LineTouchData(
                         return GestureDetector(
                           onTap: () async {
                             setState(() => _selectedPeriod = period);
-                            if (period == '1S') {
+                            if (period == '1S' || period == '1D') {
                               await _ensureIntradayLoaded();
                             }
                             _calculateChart();
@@ -2940,9 +3304,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   bool _isChartLoading = false;
 
   String _selectedPeriod = 'YTD';
-  final List<String> _periods = ['1S', '1M', '3M', 'YTD', '1A', 'ALL'];
+  final List<String> _periods = ['1D', '1S', '1M', '3M', 'YTD', '1A', 'ALL'];
   final TextEditingController _commentController = TextEditingController(
-    text: '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year} - ',
+    text:
+        '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year} - ',
   );
   List<FlSpot> _spots = [];
   List<String> _dates = [];
@@ -2960,19 +3325,102 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   // Le Future du dividende est calculé une seule fois (pas à chaque
   // rebuild), pour éviter de relancer l'appel réseau à chaque setState.
   late Future<Map<String, dynamic>?> _dividendFuture;
+  late Future<Map<String, dynamic>?> _fundamentalsFuture;
 
   @override
   void initState() {
     super.initState();
     _dividendFuture = _fetchDividendData();
+    _fundamentalsFuture = _fetchFundamentalsData();
     _loadHistory(isInitial: true);
+  }
+
+  String _formatMarketCap(double value) {
+    if (value >= 1e9) return "${(value / 1e9).toStringAsFixed(2)} Md";
+    if (value >= 1e6) return "${(value / 1e6).toStringAsFixed(2)} M";
+    return value.toStringAsFixed(0);
+  }
+
+  Future<Map<String, dynamic>?> _fetchFundamentalsData() async {
+    String name = widget.instrument['name'] ?? '';
+    String isin =
+        widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
+
+    String debugMsg = "Action : $name\nISIN/Ticker : $isin\n\n";
+
+    if (isin.isEmpty) {
+      _showDebugDialog(
+        debugMsg + "❌ ARRÊT : Aucun Ticker ou ISIN renseigné en base.",
+      );
+      return null;
+    }
+
+    try {
+      debugMsg += "⏳ Appel de l'Edge Function...\n";
+
+      // On appelle la fonction que tu as déployée tout à l'heure
+      final response = await Supabase.instance.client.functions.invoke(
+        'fetch_fundamentals',
+        body: {'ticker': isin},
+      );
+
+      debugMsg += "✅ Statut HTTP : ${response.status}\n";
+      debugMsg += "📦 Données reçues :\n${response.data}\n";
+
+      // 👇 ON AFFICHE LA POP-UP POUR VOIR CE QU'IL SE PASSE VRAIMENT
+      _showDebugDialog(debugMsg);
+
+      final data = response.data;
+      if (data != null && data['found'] == true) {
+        return {
+          'dividendYield': data['dividendYield'],
+          'marketCap': data['marketCap'],
+          'trailingPE': data['trailingPE'],
+        };
+      }
+
+      return null;
+    } catch (e) {
+      _showDebugDialog(debugMsg + "💥 ERREUR D'EXÉCUTION :\n$e");
+      return null;
+    }
+  }
+
+  // Fonction utilitaire pour forcer l'affichage du diagnostic à l'écran
+  void _showDebugDialog(String message) {
+    if (!mounted) return;
+
+    // Future.delayed permet d'afficher la pop-up même si la page est encore en train de se dessiner
+    Future.delayed(Duration.zero, () {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: const Text(
+            "🔍 Diagnostic",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: SingleChildScrollView(
+            child: Text(message, style: const TextStyle(color: Colors.white70)),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                "Fermer",
+                style: TextStyle(color: Colors.blueAccent),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
   }
 
   Future<void> _loadHistory({bool isInitial = false}) async {
     if (isInitial) {
       setState(() => _isLoading = true);
     } else {
-      // Changement de plage de dates : on ne recharge QUE le graphique.
       setState(() => _isChartLoading = true);
     }
 
@@ -2982,13 +3430,19 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     dynamic id = widget.instrument['id'];
 
     try {
-      // 1. Choisir la bonne API selon la période
-      if (_selectedPeriod == '1S') {
+      if (_selectedPeriod == '1D') {
         _fullHistory = await PriceService.fetchYahooIntraday(
           name,
           isin: isin,
-          range: '7d', // On prend 7 jours
-          interval: '1h', // 1 point par heure
+          range: '1d',
+          interval: '5m',
+        );
+      } else if (_selectedPeriod == '1S') {
+        _fullHistory = await PriceService.fetchYahooIntraday(
+          name,
+          isin: isin,
+          range: '7d',
+          interval: '1h',
         );
       } else {
         String yahooRange = 'max';
@@ -3003,7 +3457,6 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         else if (_selectedPeriod == 'ALL')
           yahooRange = 'max';
 
-        // On appelle l'historique en forçant le "range"
         _fullHistory = await PriceService.fetchYahooHistory(
           name,
           isin: isin,
@@ -3011,7 +3464,6 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         );
       }
 
-      // 2. Fallback Supabase (on garde l'heure complète !)
       if (_fullHistory.isEmpty) {
         final supabase = Supabase.instance.client;
         final rows = await supabase
@@ -3020,26 +3472,19 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
             .eq('instrument_id', id)
             .order('date');
         for (var row in rows) {
-          // On ne fait plus de .split('T')[0]
           _fullHistory[row['date'].toString()] = (row['price'] as num)
               .toDouble();
         }
       }
-    } catch (e) {
-      
-    }
+    } catch (e) {}
 
-    // 3. Ajouter le prix Live avec l'heure exacte
     double? live = await PriceService.fetchLivePrice(name, isin, id);
     _currentPrice = live;
     if (live != null) {
-      final now = DateTime.now()
-          .toIso8601String(); // On garde la date et l'heure exactes
+      final now = DateTime.now().toIso8601String();
       _fullHistory[now] = live;
     }
 
-    // Les lignes de référence (PRU, seuil d'alerte) ne dépendent pas de la
-    // plage sélectionnée : on ne les recharge qu'au premier chargement.
     if (isInitial) {
       await _loadReferenceLines();
     }
@@ -3057,12 +3502,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     final supabase = Supabase.instance.client;
     dynamic id = widget.instrument['id'];
 
-    // PRU : déjà connu si on vient de "Positions" (pos['pru'])
     if (widget.instrument['pru'] != null &&
         (widget.instrument['pru'] as double) > 0.001) {
       _pruLine = widget.instrument['pru'];
     } else if (id != null) {
-      // Sinon (cas Watchlist), on le recalcule depuis les transactions
       try {
         final txData = await supabase
             .from('transactions')
@@ -3077,7 +3520,6 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         for (var tx in txData) {
           double q = (tx['quantity'] ?? 0).toDouble();
           double p = (tx['unit_price'] ?? 0).toDouble();
-          // Frais de transaction ajoutés au prix d'achat pour un PRU exact.
           double fee = (tx['fees'] ?? 0).toDouble();
           String type = tx['transaction_type'];
 
@@ -3096,12 +3538,9 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         if (qty > 0.001 && boughtQty > 0.001) {
           _pruLine = invested / boughtQty;
         }
-      } catch (e) {
-        
-      }
+      } catch (e) {}
     }
 
-    // Seuil d'alerte actif (s'il y en a un)
     if (id != null) {
       try {
         final alerts = await supabase
@@ -3117,9 +3556,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
           _alertThresholdLine = (alerts.first['threshold_price'] as num)
               .toDouble();
         }
-      } catch (e) {
-       
-      }
+      } catch (e) {}
     }
   }
 
@@ -3136,7 +3573,9 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     DateTime endDate = DateTime.parse(sortedDates.last);
     DateTime startDate = endDate;
 
-    if (_selectedPeriod == '1S') {
+    if (_selectedPeriod == '1D') {
+      startDate = endDate.subtract(const Duration(hours: 24));
+    } else if (_selectedPeriod == '1S') {
       startDate = endDate.subtract(const Duration(days: 7));
     } else if (_selectedPeriod == '1M') {
       startDate = endDate.subtract(const Duration(days: 30));
@@ -3150,29 +3589,21 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       startDate = DateTime.parse(sortedDates.first);
     }
 
-    // 1. Filtrer les dates avant la startDate
     List<String> filteredDates = sortedDates.where((dateStr) {
       return !DateTime.parse(dateStr).isBefore(startDate);
     }).toList();
 
     if (filteredDates.isEmpty) return;
 
-    // ---- Performance exacte sur la plage ----
-    // On se base sur le PREMIER et le DERNIER prix réellement connus dans la
-    // plage sélectionnée (avant tout échantillonnage pour l'affichage du
-    // graphique). C'est cette valeur, et non celle des points affichés sur
-    // le graphique (qui peuvent être sous-échantillonnés), qui sert au
-    // calcul du "% sur la période" affiché en haut de l'écran. Cela réduit
-    // l'écart avec des sources comme TradingView, qui comparent toujours
-    // la clôture de début de période à la dernière cotation connue.
     _periodFirstPrice = _fullHistory[filteredDates.first];
     _periodLastPrice = _fullHistory[filteredDates.last];
 
-    // C'est cette variable qui manquait dans ton code !
     List<String> dates = [];
 
     // 2. Logique d'échantillonnage selon la période
-    if (_selectedPeriod == '1S') {
+    if (_selectedPeriod == '1D') {
+      dates = List.from(filteredDates);
+    } else if (_selectedPeriod == '1S') {
       Set<String> seenHours = {};
       for (var dateStr in filteredDates) {
         DateTime d = DateTime.parse(dateStr);
@@ -3244,7 +3675,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   }
 
   Future<void> _showEditInstrumentDialog() async {
-        // On va chercher les vraies infos à jour directement dans la base,
+    // On va chercher les vraies infos à jour directement dans la base,
     // pour ne pas perdre l'ISIN, la catégorie ou le commentaire
     Map<String, dynamic> instrumentData = widget.instrument;
     try {
@@ -3256,20 +3687,23 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
       instrumentData = freshData;
     } catch (e) {}
 
-        String? selectedCategory = instrumentData['category'];
+    String? selectedCategory = instrumentData['category'];
     if (selectedCategory != null && !kCategories.contains(selectedCategory)) {
       selectedCategory = null;
     }
-  
-// --- 1. PRÉPARATION DU COMMENTAIRE ---
+
+    // --- 1. PRÉPARATION DU COMMENTAIRE ---
     final now = DateTime.now();
-    final datePrefix = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
-    
-    String existingComment = (instrumentData['comment'] ?? '').toString().trim();
-    
+    final datePrefix =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
+
+    String existingComment = (instrumentData['comment'] ?? '')
+        .toString()
+        .trim();
+
     // On ajoute la date du jour à la fin (ou au début si c'est vide)
-    final String initialCommentText = existingComment.isEmpty 
-        ? datePrefix 
+    final String initialCommentText = existingComment.isEmpty
+        ? datePrefix
         : '$existingComment\n$datePrefix';
 
     final TextEditingController commentController = TextEditingController(
@@ -3286,8 +3720,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
 
     // Variables pour les comptes
     List<Map<String, dynamic>> dialogAccountsList = [];
-    dynamic selectedAccountId =
-        instrumentData['account_id'];
+    dynamic selectedAccountId = instrumentData['account_id'];
 
     // 2. Avant d'ouvrir le dialogue (ou au début de ta fonction), charge la liste des comptes :
     try {
@@ -3427,7 +3860,9 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                 // Si le commentaire se termine EXACTEMENT par la date vide
                 if (finalComment.endsWith(prefixToMatch)) {
                   // On retire la longueur de la date à la fin du texte
-                  finalComment = finalComment.substring(0, finalComment.length - prefixToMatch.length).trim();
+                  finalComment = finalComment
+                      .substring(0, finalComment.length - prefixToMatch.length)
+                      .trim();
                 }
                 // -------------------------------------------------
 
@@ -3439,7 +3874,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                         'name': nameController.text.trim(),
                         'ticker_isin': isinController.text.trim(),
                         'category': selectedCategory,
-                        'comment': finalComment, // <-- ON UTILISE finalComment ICI
+                        'comment':
+                            finalComment, // <-- ON UTILISE finalComment ICI
                         'account_id': selectedAccountId,
                       })
                       .eq('id', widget.instrument['id']);
@@ -3447,7 +3883,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                   // Mise à jour de l'état local
                   setState(() {
                     widget.instrument['name'] = nameController.text.trim();
-                    widget.instrument['ticker_isin'] = isinController.text.trim();
+                    widget.instrument['ticker_isin'] = isinController.text
+                        .trim();
                     widget.instrument['account_id'] = selectedAccountId;
                     widget.instrument['category'] = selectedCategory;
                     widget.instrument['comment'] = finalComment; // <-- ET ICI
@@ -3487,9 +3924,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     );
   }
 
-Future<Map<String, dynamic>?> _fetchDividendData() async {
+  Future<Map<String, dynamic>?> _fetchDividendData() async {
     try {
-      String ticker = widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
+      String ticker =
+          widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
       if (ticker.isEmpty) return null;
 
       // 1. Appel magique à la Edge Function
@@ -3502,10 +3940,10 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
 
       // 2. Si la Edge Function a trouvé un dividende
       if (data != null && data['found'] == true) {
-        
         final double amount = (data['amount'] as num).toDouble();
-        final String displayDate = data['displayDate']; // Pour l'écran (27/08/2026)
-        final String sqlDate = data['sqlDate'];         // Pour la BDD (2026-08-27)
+        final String displayDate =
+            data['displayDate']; // Pour l'écran (27/08/2026)
+        final String sqlDate = data['sqlDate']; // Pour la BDD (2026-08-27)
 
         // 3. Sauvegarde dans ta table Supabase (pour faire un cache)
         try {
@@ -3515,25 +3953,23 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
                 'last_dividend_date': sqlDate,
                 'last_dividend_amount': amount,
               })
-              .eq('id', widget.instrument['id']); 
+              .eq('id', widget.instrument['id']);
         } catch (e) {
           print("Erreur de sauvegarde en base : $e");
         }
 
         // 4. On retourne les infos pour le FutureBuilder (l'UI)
-        return {
-          'amount': amount,
-          'date': displayDate
-        };
+        return {'amount': amount, 'date': displayDate};
       }
-      
+
       return null; // Aucun dividende trouvé
     } catch (e) {
       print("Erreur lors de l'appel à fetch_dividend : $e");
       return null;
     }
   }
-@override
+
+  @override
   Widget build(BuildContext context) {
     double perfPct = 0.0;
     Color perfColor = Colors.white;
@@ -3542,7 +3978,8 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
     if (_periodFirstPrice != null &&
         _periodLastPrice != null &&
         _periodFirstPrice! > 0.001) {
-      perfPct = ((_periodLastPrice! - _periodFirstPrice!) / _periodFirstPrice!) * 100;
+      perfPct =
+          ((_periodLastPrice! - _periodFirstPrice!) / _periodFirstPrice!) * 100;
       perfColor = perfPct >= 0 ? Colors.greenAccent : Colors.redAccent;
     }
 
@@ -3551,7 +3988,10 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
       appBar: AppBar(
         title: Text(
           widget.instrument['name'],
-          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
         ),
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
@@ -3563,7 +4003,79 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
           IconButton(
             icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
             onPressed: () async {
-              // ... (Ton code de suppression actuel reste identique)
+              final confirm =
+                  await showDialog<bool>(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      backgroundColor: const Color(0xFF1C1C1E),
+                      title: const Text(
+                        "Supprimer la valeur",
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      content: Text(
+                        "Supprimer définitivement \"${widget.instrument['name']}\" et tout son historique de transactions ? Cette action est irréversible.",
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.blueAccent,
+                          ),
+                          child: const Text("Annuler"),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text(
+                            "Supprimer",
+                            style: TextStyle(
+                              color: Colors.redAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ) ??
+                  false;
+
+              if (!confirm) return;
+
+              try {
+                final id = widget.instrument['id'];
+                await Supabase.instance.client
+                    .from('alerts')
+                    .delete()
+                    .eq('instrument_id', id);
+                await Supabase.instance.client
+                    .from('transactions')
+                    .delete()
+                    .eq('instrument_id', id);
+                await Supabase.instance.client
+                    .from('daily_prices')
+                    .delete()
+                    .eq('instrument_id', id);
+                await Supabase.instance.client
+                    .from('instruments')
+                    .delete()
+                    .eq('id', id);
+
+                if (context.mounted) {
+                  Navigator.pop(
+                    context,
+                    true,
+                  ); // renvoie "true" à l'écran précédent
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text("Erreur lors de la suppression : $e"),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
             },
           ),
         ],
@@ -3584,222 +4096,266 @@ Future<Map<String, dynamic>?> _fetchDividendData() async {
                           _currentPrice != null
                               ? "${_currentPrice!.toStringAsFixed(2)} €"
                               : "Non coté",
-                          style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 30,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                         const SizedBox(height: 6),
-                        if (_periodFirstPrice != null && _periodLastPrice != null)
+                        if (_periodFirstPrice != null &&
+                            _periodLastPrice != null)
                           Text(
                             "${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)} % sur la période",
-                            style: TextStyle(color: perfColor, fontWeight: FontWeight.bold, fontSize: 15),
+                            style: TextStyle(
+                              color: perfColor,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
                           ),
-                        if ((widget.instrument['category'] ?? '').toString().isNotEmpty) ...[
+                        if ((widget.instrument['category'] ?? '')
+                            .toString()
+                            .isNotEmpty) ...[
                           const SizedBox(height: 12),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 3,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.white.withOpacity(0.2),
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Text(
                               widget.instrument['category'],
-                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
                             ),
                           ),
                         ],
-                        if ((widget.instrument['comment'] ?? '').toString().isNotEmpty) ...[
+                        if ((widget.instrument['comment'] ?? '')
+                            .toString()
+                            .isNotEmpty) ...[
                           const SizedBox(height: 8),
                           Text(
                             widget.instrument['comment'],
-                            style: const TextStyle(color: Colors.white70, fontSize: 13, fontStyle: FontStyle.italic),
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                              fontStyle: FontStyle.italic,
+                            ),
                           ),
                         ],
                       ],
                     ),
                   ),
-                  
+
                   // 2. REMPLACEMENT DE Expanded PAR SizedBox(height: 300)
                   SizedBox(
                     height: 300,
                     child: Padding(
-                      padding: const EdgeInsets.only(right: 20, left: 10, bottom: 10),
+                      padding: const EdgeInsets.only(
+                        right: 20,
+                        left: 10,
+                        bottom: 10,
+                      ),
                       child: _isChartLoading
                           ? const Center(
-                              child: CircularProgressIndicator(color: Colors.white),
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                              ),
                             )
                           : _spots.isEmpty
                           ? const Center(
-                              child: Text("Pas de données disponibles", style: TextStyle(color: Colors.white54)),
+                              child: Text(
+                                "Pas de données disponibles",
+                                style: TextStyle(color: Colors.white54),
+                              ),
                             )
-                          :
-LineChart(
-  LineChartData(
-    gridData: FlGridData(
-      show: true,
-      drawVerticalLine: false,
-      getDrawingHorizontalLine: (v) => FlLine(
-        color: Colors.white10,
-        strokeWidth: 1,
-      ),
-    ),
-    titlesData: FlTitlesData(
-      show: true,
-      rightTitles: const AxisTitles(
-        sideTitles: SideTitles(showTitles: false),
-      ),
-      topTitles: const AxisTitles(
-        sideTitles: SideTitles(showTitles: false),
-      ),
-      bottomTitles: AxisTitles(
-        sideTitles: SideTitles(
-          showTitles: true,
-          reservedSize: 40, // Légèrement augmenté pour le texte sur deux lignes
-          interval:
-              (_spots.length / 5).ceilToDouble() == 0
-              ? 1
-              : (_spots.length / 5).ceilToDouble(),
-          getTitlesWidget: (value, meta) {
-            int index = value.toInt();
-            if (index >= 0 && index < _dates.length) {
-              DateTime d = DateTime.parse(
-                _dates[index],
-              );
-              String day = d.day.toString().padLeft(
-                2,
-                '0',
-              );
-              String month = d.month
-                  .toString()
-                  .padLeft(2, '0');
+                          : LineChart(
+                              LineChartData(
+                                gridData: FlGridData(
+                                  show: true,
+                                  drawVerticalLine: false,
+                                  getDrawingHorizontalLine: (v) => FlLine(
+                                    color: Colors.white10,
+                                    strokeWidth: 1,
+                                  ),
+                                ),
+                                titlesData: FlTitlesData(
+                                  show: true,
+                                  rightTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false),
+                                  ),
+                                  topTitles: const AxisTitles(
+                                    sideTitles: SideTitles(showTitles: false),
+                                  ),
+                                  bottomTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 40, // Légèrement augmenté pour le texte sur deux lignes
+                                      interval:
+                                          (_spots.length / 5).ceilToDouble() ==
+                                              0
+                                          ? 1
+                                          : (_spots.length / 5).ceilToDouble(),
+                                      getTitlesWidget: (value, meta) {
+                                        int index = value.toInt();
+                                        if (index >= 0 &&
+                                            index < _dates.length) {
+                                          DateTime d = DateTime.parse(
+                                            _dates[index],
+                                          );
+                                          String day = d.day.toString().padLeft(
+                                            2,
+                                            '0',
+                                          );
+                                          String month = d.month
+                                              .toString()
+                                              .padLeft(2, '0');
 
-              String text;
-              if (_selectedPeriod == '1S') {
-                // Affichage Jour + Heure pour la semaine
-                String hour = d.hour
-                    .toString()
-                    .padLeft(2, '0');
-                String min = d.minute
-                    .toString()
-                    .padLeft(2, '0');
-                text = '$day/$month\n$hour:$min';
-              } else if (_selectedPeriod == 'ALL' ||
-                  _selectedPeriod == '1A' ||
-                  _selectedPeriod == 'YTD') {
-                // Affichage Mois/Année pour le long terme
-                text =
-                    '$month/${d.year.toString().substring(2)}';
-              } else {
-                // Affichage standard Jour/Mois pour 1M et 3M
-                text = '$day/$month';
-              }
+                                          String text;
+                                          if (_selectedPeriod == '1D') {
+                                            String hour = d.hour
+                                                .toString()
+                                                .padLeft(2, '0');
+                                            String min = d.minute
+                                                .toString()
+                                                .padLeft(2, '0');
+                                            text = '$hour:$min';
+                                          } else if (_selectedPeriod == '1S') {
+                                            // Affichage Jour + Heure pour la semaine
+                                            String hour = d.hour
+                                                .toString()
+                                                .padLeft(2, '0');
+                                            String min = d.minute
+                                                .toString()
+                                                .padLeft(2, '0');
+                                            text = '$day/$month\n$hour:$min';
+                                          } else if (_selectedPeriod == 'ALL' ||
+                                              _selectedPeriod == '1A' ||
+                                              _selectedPeriod == 'YTD') {
+                                            // Affichage Mois/Année pour le long terme
+                                            text =
+                                                '$month/${d.year.toString().substring(2)}';
+                                          } else {
+                                            // Affichage standard Jour/Mois pour 1M et 3M
+                                            text = '$day/$month';
+                                          }
 
-              return Padding(
-                padding: const EdgeInsets.only(
-                  top: 8.0,
-                ),
-                child: Text(
-                  text,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 10,
-                  ),
-                ),
-              );
-            }
-            return const Text('');
-          },
-        ),
-      ),
-      leftTitles: AxisTitles(
-        sideTitles: SideTitles(
-          showTitles: true,
-          reservedSize: 55,
-          getTitlesWidget: (value, meta) => Text(
-            '${value.toStringAsFixed(0)} €',
-            style: const TextStyle(
-              color: Colors.white54,
-              fontSize: 11,
-            ),
-          ),
-        ),
-      ),
-    ),
-    borderData: FlBorderData(show: false),
-    extraLinesData: ExtraLinesData(
-      horizontalLines: [
-        if (_pruLine != null)
-          HorizontalLine(
-            y: _pruLine!,
-            color: Colors.white70,
-            strokeWidth: 1.5,
-            dashArray: [6, 4],
-            label: HorizontalLineLabel(
-              show: true,
-              alignment: Alignment.topRight,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-              ),
-              labelResolver: (line) =>
-                  "PRU ${_pruLine!.toStringAsFixed(2)} €",
-            ),
-          ),
-        if (_alertThresholdLine != null)
-          HorizontalLine(
-            y: _alertThresholdLine!,
-            color: Colors.white70,
-            strokeWidth: 1,
-            label: HorizontalLineLabel(
-              show: true,
-              alignment: Alignment.bottomRight,
-              style: const TextStyle(
-                color: Colors.white70,
-                fontSize: 10,
-                fontWeight: FontWeight.bold,
-              ),
-              labelResolver: (line) =>
-                  "Alerte ${_alertThresholdLine!.toStringAsFixed(2)} €",
-            ),
-          ),
-      ],
-    ),
-    lineTouchData: LineTouchData(
-      touchTooltipData: LineTouchTooltipData(
-        getTooltipItems: (touchedSpots) =>
-            touchedSpots.map((spot) {
-              int index = spot.x.toInt();
-              String formattedDate = "";
-              if (index < _dates.length) {
-              DateTime parsedDate = DateTime.parse(_dates[index]);
-              formattedDate = DateFormat('dd/MM/yyyy').format(parsedDate);
-              }
-              return LineTooltipItem(
-                "$formattedDate\n${spot.y.toStringAsFixed(2)} €",
-                const TextStyle(
-                  color: Colors.white,
-                ),
-              );
-            }).toList(),
-      ),
-    ),
-    lineBarsData: [
-      LineChartBarData(
-        spots: _spots,
-        isCurved: false,
-        color: perfColor,
-        barWidth: 2,
-        isStrokeCapRound: true,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(
-          show: true,
-          color: perfColor.withOpacity(0.1),
-        ),
-      ),
-    ],
-  ),
-)
-                            
+                                          return Padding(
+                                            padding: const EdgeInsets.only(
+                                              top: 8.0,
+                                            ),
+                                            child: Text(
+                                              text,
+                                              textAlign: TextAlign.center,
+                                              style: const TextStyle(
+                                                color: Colors.white54,
+                                                fontSize: 10,
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                        return const Text('');
+                                      },
+                                    ),
+                                  ),
+                                  leftTitles: AxisTitles(
+                                    sideTitles: SideTitles(
+                                      showTitles: true,
+                                      reservedSize: 55,
+                                      getTitlesWidget: (value, meta) => Text(
+                                        '${value.toStringAsFixed(0)} €',
+                                        style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                borderData: FlBorderData(show: false),
+                                extraLinesData: ExtraLinesData(
+                                  horizontalLines: [
+                                    if (_pruLine != null)
+                                      HorizontalLine(
+                                        y: _pruLine!,
+                                        color: Colors.white70,
+                                        strokeWidth: 1.5,
+                                        dashArray: [6, 4],
+                                        label: HorizontalLineLabel(
+                                          show: true,
+                                          alignment: Alignment.topRight,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          labelResolver: (line) =>
+                                              "PRU ${_pruLine!.toStringAsFixed(2)} €",
+                                        ),
+                                      ),
+                                    if (_alertThresholdLine != null)
+                                      HorizontalLine(
+                                        y: _alertThresholdLine!,
+                                        color: Colors.white70,
+                                        strokeWidth: 1,
+                                        label: HorizontalLineLabel(
+                                          show: true,
+                                          alignment: Alignment.bottomRight,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          labelResolver: (line) =>
+                                              "Alerte ${_alertThresholdLine!.toStringAsFixed(2)} €",
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                                lineTouchData: LineTouchData(
+                                  touchTooltipData: LineTouchTooltipData(
+                                    getTooltipItems: (touchedSpots) =>
+                                        touchedSpots.map((spot) {
+                                          int index = spot.x.toInt();
+                                          String formattedDate = "";
+                                          if (index < _dates.length) {
+                                            DateTime parsedDate =
+                                                DateTime.parse(_dates[index]);
+                                            formattedDate = DateFormat(
+                                              'dd/MM/yyyy',
+                                            ).format(parsedDate);
+                                          }
+                                          return LineTooltipItem(
+                                            "$formattedDate\n${spot.y.toStringAsFixed(2)} €",
+                                            const TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          );
+                                        }).toList(),
+                                  ),
+                                ),
+                                lineBarsData: [
+                                  LineChartBarData(
+                                    spots: _spots,
+                                    isCurved: false,
+                                    color: perfColor,
+                                    barWidth: 2,
+                                    isStrokeCapRound: true,
+                                    dotData: const FlDotData(show: false),
+                                    belowBarData: BarAreaData(
+                                      show: true,
+                                      color: perfColor.withOpacity(0.1),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                     ),
                   ),
 
@@ -3819,15 +4375,22 @@ LineChart(
                             }
                           },
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 8,
+                            ),
                             decoration: BoxDecoration(
-                              color: isSelected ? const Color(0xFF333333) : Colors.transparent,
+                              color: isSelected
+                                  ? const Color(0xFF333333)
+                                  : Colors.transparent,
                               borderRadius: BorderRadius.circular(15),
                             ),
                             child: Text(
                               period,
                               style: TextStyle(
-                                color: isSelected ? Colors.white : Colors.white54,
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.white54,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 13,
                               ),
@@ -3843,7 +4406,11 @@ LineChart(
                     padding: EdgeInsets.symmetric(horizontal: 16.0),
                     child: Text(
                       "Dividendes",
-                      style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   FutureBuilder<Map<String, dynamic>?>(
@@ -3852,10 +4419,16 @@ LineChart(
                       if (snapshot.connectionState == ConnectionState.waiting) {
                         return const Padding(
                           padding: EdgeInsets.all(24.0),
-                          child: Center(child: CircularProgressIndicator(color: Colors.white)),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                            ),
+                          ),
                         );
                       }
-                      if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
+                      if (snapshot.hasError ||
+                          !snapshot.hasData ||
+                          snapshot.data == null) {
                         return const Padding(
                           padding: EdgeInsets.all(16.0),
                           child: Text(
@@ -3864,10 +4437,13 @@ LineChart(
                           ),
                         );
                       }
-                      
+
                       final divData = snapshot.data!;
                       return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16.0,
+                          vertical: 12.0,
+                        ),
                         child: Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
@@ -3876,16 +4452,124 @@ LineChart(
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.monetization_on, color: Colors.greenAccent, size: 32),
+                              const Icon(
+                                Icons.monetization_on,
+                                color: Colors.greenAccent,
+                                size: 32,
+                              ),
                               const SizedBox(width: 16),
                               Expanded(
                                 child: Text(
                                   "Dernier versement : ${divData['amount'].toStringAsFixed(2)} €/unité le ${divData['date']}",
-                                  style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                               ),
                             ],
                           ),
+                        ),
+                      );
+                    },
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Text(
+                      "Fondamentaux",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  FutureBuilder<Map<String, dynamic>?>(
+                    future: _fundamentalsFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Padding(
+                          padding: EdgeInsets.all(24.0),
+                          child: Center(
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                            ),
+                          ),
+                        );
+                      }
+                      if (!snapshot.hasData || snapshot.data == null) {
+                        return const Padding(
+                          padding: EdgeInsets.all(16.0),
+                          child: Text(
+                            "Données fondamentales non disponibles.",
+                            style: TextStyle(color: Colors.white54),
+                          ),
+                        );
+                      }
+
+                      final data = snapshot.data!;
+                      Widget statTile(String label, String value) => Expanded(
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 4),
+                          padding: const EdgeInsets.symmetric(
+                            vertical: 12,
+                            horizontal: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1C1C1E),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            children: [
+                              Text(
+                                value,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                label,
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 11,
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16.0,
+                          vertical: 12.0,
+                        ),
+                        child: Row(
+                          children: [
+                            statTile(
+                              "Rendement dividende",
+                              data['dividendYield'] != null
+                                  ? "${data['dividendYield'].toStringAsFixed(2)} %"
+                                  : "-",
+                            ),
+                            statTile(
+                              "Capitalisation",
+                              data['marketCap'] != null
+                                  ? _formatMarketCap(data['marketCap'])
+                                  : "-",
+                            ),
+                            statTile(
+                              "P/E ratio",
+                              data['trailingPE'] != null
+                                  ? data['trailingPE'].toStringAsFixed(1)
+                                  : "-",
+                            ),
+                          ],
                         ),
                       );
                     },
@@ -4014,36 +4698,51 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             TextButton(
               onPressed: () => Navigator.pop(context),
               style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
+                foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
+              ),
               child: const Text("Annuler"),
             ),
             TextButton(
               onPressed: () async {
-                double? newQty = double.tryParse(
-                  qtyController.text.replaceAll(',', '.'),
-                );
                 double? newPrice = double.tryParse(
                   priceController.text.replaceAll(',', '.'),
                 );
+                if (newPrice == null) return;
 
-                if (newQty != null && newPrice != null) {
-                  await supabase
-                      .from('transactions')
-                      .update({
-                        'quantity': newQty,
-                        'unit_price': newPrice,
-                        'date': selectedDate.toIso8601String(),
-                      })
-                      .eq('id', tx['id']);
+                try {
+                  final today = DateTime.now().toIso8601String().split('T')[0];
+                  await supabase.from('daily_prices').upsert({
+                    'instrument_id': tx['instrument_id'], // <-- MODIFIÉ ICI
+                    'date': today,
+                    'price': newPrice,
+                  }, onConflict: 'instrument_id,date');
 
-                  Navigator.pop(context);
-                  _loadPortfolioData();
+                  PriceCache.set(
+                    tx['instrument_id'].toString(),
+                    newPrice,
+                  ); // <-- MODIFIÉ ICI
+
+                  if (context.mounted) {
+                    Navigator.pop(context);
+                    _loadPortfolioData();
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text("Erreur d'enregistrement : $e"),
+                        backgroundColor: Colors.red,
+                      ),
+                    );
+                  }
                 }
               },
               child: const Text(
-                "Mettre à jour",
-                style: TextStyle(fontWeight: FontWeight.bold),
+                "Enregistrer",
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blueAccent,
+                ),
               ),
             ),
           ],
@@ -4074,9 +4773,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                style: TextButton.styleFrom(
-                  foregroundColor: Colors.blueAccent,
-                ),
+                style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
                 child: const Text("Annuler"),
               ),
               TextButton(
@@ -4145,9 +4842,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
+            style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
             child: const Text("Annuler"),
           ),
           TextButton(
@@ -4155,23 +4850,39 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
               double? newPrice = double.tryParse(
                 priceController.text.replaceAll(',', '.'),
               );
-              if (newPrice != null) {
+              if (newPrice == null) return;
+
+              try {
                 final today = DateTime.now().toIso8601String().split('T')[0];
-                await supabase.from('daily_prices').upsert(
-                  {
-                    'instrument_id': inst['id'],
-                    'date': today,
-                    'price': newPrice,
-                  },
-                  onConflict: 'instrument_id,date',
-                );
-                Navigator.pop(context);
-                _loadPortfolioData();
+                await supabase.from('daily_prices').upsert({
+                  'instrument_id': inst['id'],
+                  'date': today,
+                  'price': newPrice,
+                }, onConflict: 'instrument_id,date');
+
+                PriceCache.set(inst['id'].toString(), newPrice);
+
+                if (context.mounted) {
+                  Navigator.pop(context);
+                  _loadPortfolioData();
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text("Erreur d'enregistrement : $e"),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
               }
             },
             child: const Text(
               "Enregistrer",
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.blueAccent,
+              ),
             ),
           ),
         ],
@@ -4186,7 +4897,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       // 1. On récupère toutes les données de Supabase
       final historyData = await supabase
           .from('transactions')
-          .select('*, instruments(name, ticker_isin, account_id, accounts(name))')
+          .select(
+            '*, instruments(name, ticker_isin, account_id, accounts(name))',
+          )
           .order('date', ascending: false);
 
       final instrumentsData = await supabase
@@ -4243,15 +4956,12 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
               _livePrices[inst['name']] = livePrice;
             });
           }
-        } catch (e) {
-          
-        }
+        } catch (e) {}
       }).toList();
 
       // On laisse tourner ces requêtes sans bloquer l'application
       await Future.wait(priceFutures);
     } catch (e) {
-      
       if (mounted) setState(() => _isLoading = false);
     }
   }
@@ -4285,8 +4995,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           TextButton(
             onPressed: () => Navigator.pop(context),
             style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
+              foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
+            ),
             child: const Text("Annuler"),
           ),
           TextButton(
@@ -4322,7 +5032,10 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             },
             child: const Text(
               "Enregistrer",
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.blueAccent),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.blueAccent,
+              ),
             ),
           ),
         ],
@@ -4336,7 +5049,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Format du fichier CSV'),
-                    content: const SingleChildScrollView(
+          content: const SingleChildScrollView(
             child: ListBody(
               children: [
                 Text(
@@ -4346,7 +5059,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                 Text('1. Date (jj/mm/aaaa)'),
                 Text('2. Nom de l\'instrument'),
                 Text('3. Ticker ou ISIN'),
-                Text('4. Type de transaction (Buy, Sell, Deposit, Dividend, Withdrawal)'),
+                Text(
+                  '4. Type de transaction (Buy, Sell, Deposit, Dividend, Withdrawal)',
+                ),
                 Text('5. Quantité'),
                 Text('6. Prix unitaire'),
                 Text('7. Frais de courtage'),
@@ -4379,162 +5094,178 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
- Future<void> _importCSV() async {
-  setState(() {
-    _isImporting = true;
-  });
+  Future<void> _importCSV() async {
+    setState(() {
+      _isImporting = true;
+    });
 
-  try {
-    fp.FilePickerResult? result = await fp.FilePicker.platform.pickFiles(
-      type: fp.FileType.custom,
-      allowedExtensions: ['csv'],
-      withData: true,
-    );
+    try {
+      fp.FilePickerResult? result = await fp.FilePicker.platform.pickFiles(
+        type: fp.FileType.custom,
+        allowedExtensions: ['csv'],
+        withData: true,
+      );
 
-    if (result != null && result.files.first.bytes != null) {
-      final csvString = utf8.decode(result.files.first.bytes!);
+      if (result != null && result.files.first.bytes != null) {
+        final csvString = utf8.decode(result.files.first.bytes!);
 
-      // CORRECTION 1 : Détection automatique du séparateur (ou force le ';')
-      String delimiter = csvString.contains(';') ? ';' : ',';
+        // CORRECTION 1 : Détection automatique du séparateur (ou force le ';')
+        String delimiter = csvString.contains(';') ? ';' : ',';
 
-      List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
-        fieldDelimiter: delimiter,
-        eol: '\n', // Attention : certains CSV Windows ont '\r\n'
-      ).convert(csvString);
+        List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
+          fieldDelimiter: delimiter,
+          eol: '\n', // Attention : certains CSV Windows ont '\r\n'
+        ).convert(csvString);
 
-      if (rowsAsListOfValues.isEmpty) return;
+        if (rowsAsListOfValues.isEmpty) return;
 
-      if (rowsAsListOfValues.first[0].toString().toLowerCase().contains('date')) {
-        rowsAsListOfValues.removeAt(0);
-      }
-
-      final dateFormat = DateFormat('dd/MM/yyyy');
-      const validTypes = ['Buy', 'Sell', 'Deposit', 'Dividend', 'Withdrawal'];
-
-      Map<String, dynamic> accountCache = {
-        for (var acc in _accountsList) 
-          (acc['name'] as String).toLowerCase(): acc['id']
-      };
-      
-      // CORRECTION 3 : Clé de cache composée (accountId_nomInstrument)
-      Map<String, dynamic> instrumentCache = {
-        for (var inst in _instruments) 
-          "${inst['account_id']}_${(inst['name'] as String).toLowerCase()}": inst['id']
-      };
-
-      int importedCount = 0;
-      int skippedCount = 0;
-
-      for (var i = 0; i < rowsAsListOfValues.length; i++) {
-        var row = rowsAsListOfValues[i];
-        
-        if (row.length < 8) {
-          print('Ligne $i ignorée : pas assez de colonnes (${row.length})');
-          skippedCount++;
-          continue;
+        if (rowsAsListOfValues.first[0].toString().toLowerCase().contains(
+          'date',
+        )) {
+          rowsAsListOfValues.removeAt(0);
         }
 
-        try {
-          // Utilisation de .split(' ').first pour ignorer l'heure si présente
-          String dateStr = row[0].toString().trim().split(' ').first;
-          DateTime parsedDate = dateFormat.parse(dateStr);
-          
-          String name = row[1].toString().trim();
-          String tickerIsin = row[2].toString().trim();
-          String txType = row[3].toString().trim();
-          double quantity = double.tryParse(row[4].toString().trim().replaceAll(',', '.')) ?? 0;
-          double unitPrice = double.tryParse(row[5].toString().trim().replaceAll(',', '.')) ?? 0;
-          double fees = double.tryParse(row[6].toString().trim().replaceAll(',', '.')) ?? 0;
-          String accountName = row[7].toString().trim();
+        final dateFormat = DateFormat('dd/MM/yyyy');
+        const validTypes = ['Buy', 'Sell', 'Deposit', 'Dividend', 'Withdrawal'];
 
-          if (name.isEmpty || accountName.isEmpty) {
-            print('Ligne $i ignorée : Nom ou Compte vide');
+        Map<String, dynamic> accountCache = {
+          for (var acc in _accountsList)
+            (acc['name'] as String).toLowerCase(): acc['id'],
+        };
+
+        // CORRECTION 3 : Clé de cache composée (accountId_nomInstrument)
+        Map<String, dynamic> instrumentCache = {
+          for (var inst in _instruments)
+            "${inst['account_id']}_${(inst['name'] as String).toLowerCase()}":
+                inst['id'],
+        };
+
+        int importedCount = 0;
+        int skippedCount = 0;
+
+        for (var i = 0; i < rowsAsListOfValues.length; i++) {
+          var row = rowsAsListOfValues[i];
+
+          if (row.length < 8) {
+            print('Ligne $i ignorée : pas assez de colonnes (${row.length})');
             skippedCount++;
             continue;
           }
 
-          String normalizedType = validTypes.firstWhere(
-            (t) => t.toLowerCase() == txType.toLowerCase(),
-            orElse: () => 'Buy',
-          );
+          try {
+            // Utilisation de .split(' ').first pour ignorer l'heure si présente
+            String dateStr = row[0].toString().trim().split(' ').first;
+            DateTime parsedDate = dateFormat.parse(dateStr);
 
-          // 1. Compte : récupération ou création
-          dynamic accountId = accountCache[accountName.toLowerCase()];
-          if (accountId == null) {
-            final newAccount = await supabase
-                .from('accounts')
-                .insert({'name': accountName})
-                .select()
-                .single();
-            accountId = newAccount['id'];
-            accountCache[accountName.toLowerCase()] = accountId;
+            String name = row[1].toString().trim();
+            String tickerIsin = row[2].toString().trim();
+            String txType = row[3].toString().trim();
+            double quantity =
+                double.tryParse(
+                  row[4].toString().trim().replaceAll(',', '.'),
+                ) ??
+                0;
+            double unitPrice =
+                double.tryParse(
+                  row[5].toString().trim().replaceAll(',', '.'),
+                ) ??
+                0;
+            double fees =
+                double.tryParse(
+                  row[6].toString().trim().replaceAll(',', '.'),
+                ) ??
+                0;
+            String accountName = row[7].toString().trim();
+
+            if (name.isEmpty || accountName.isEmpty) {
+              print('Ligne $i ignorée : Nom ou Compte vide');
+              skippedCount++;
+              continue;
+            }
+
+            String normalizedType = validTypes.firstWhere(
+              (t) => t.toLowerCase() == txType.toLowerCase(),
+              orElse: () => 'Buy',
+            );
+
+            // 1. Compte : récupération ou création
+            dynamic accountId = accountCache[accountName.toLowerCase()];
+            if (accountId == null) {
+              final newAccount = await supabase
+                  .from('accounts')
+                  .insert({'name': accountName})
+                  .select()
+                  .single();
+              accountId = newAccount['id'];
+              accountCache[accountName.toLowerCase()] = accountId;
+            }
+
+            // 2. Instrument : récupération ou création avec clé composite
+            String instrumentCacheKey = "${accountId}_${name.toLowerCase()}";
+            dynamic instrumentId = instrumentCache[instrumentCacheKey];
+
+            if (instrumentId == null) {
+              final newInstrument = await supabase
+                  .from('instruments')
+                  .insert({
+                    'name': name,
+                    'ticker_isin': tickerIsin.toUpperCase(),
+                    'account_id': accountId,
+                    'is_watchlist': false,
+                  })
+                  .select()
+                  .single();
+              instrumentId = newInstrument['id'];
+              instrumentCache[instrumentCacheKey] = instrumentId;
+            }
+
+            // 3. Transaction
+            await supabase.from('transactions').insert({
+              'instrument_id': instrumentId,
+              'transaction_type': normalizedType,
+              'quantity': quantity,
+              'unit_price': unitPrice,
+              'fees': fees,
+              'date': parsedDate.toIso8601String(),
+            });
+
+            importedCount++;
+          } catch (e) {
+            // CORRECTION 2 : On affiche l'erreur dans la console pour comprendre
+            print('Erreur ligne $i: $e');
+            print('Contenu de la ligne : $row');
+            skippedCount++;
+            continue;
           }
-
-          // 2. Instrument : récupération ou création avec clé composite
-          String instrumentCacheKey = "${accountId}_${name.toLowerCase()}";
-          dynamic instrumentId = instrumentCache[instrumentCacheKey];
-          
-          if (instrumentId == null) {
-            final newInstrument = await supabase
-                .from('instruments')
-                .insert({
-                  'name': name,
-                  'ticker_isin': tickerIsin.toUpperCase(),
-                  'account_id': accountId,
-                  'is_watchlist': false,
-                })
-                .select()
-                .single();
-            instrumentId = newInstrument['id'];
-            instrumentCache[instrumentCacheKey] = instrumentId;
-          }
-
-          // 3. Transaction
-          await supabase.from('transactions').insert({
-            'instrument_id': instrumentId,
-            'transaction_type': normalizedType,
-            'quantity': quantity,
-            'unit_price': unitPrice,
-            'fees': fees,
-            'date': parsedDate.toIso8601String(),
-          });
-
-          importedCount++;
-        } catch (e) {
-          // CORRECTION 2 : On affiche l'erreur dans la console pour comprendre
-          print('Erreur ligne $i: $e');
-          print('Contenu de la ligne : $row');
-          skippedCount++;
-          continue;
         }
-      }
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '$importedCount transaction(s) importée(s)'
-              '${skippedCount > 0 ? ', $skippedCount ligne(s) ignorée(s)' : ''} !',
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '$importedCount transaction(s) importée(s)'
+                '${skippedCount > 0 ? ', $skippedCount ligne(s) ignorée(s)' : ''} !',
+              ),
             ),
-          ),
-        );
-      }
+          );
+        }
 
-      _loadPortfolioData();
+        _loadPortfolioData();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Erreur globale : $e')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+        });
+      }
     }
-  } catch (e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Erreur globale : $e')));
-    }
-  } finally {
-    if (mounted) {
-      setState(() {
-        _isImporting = false;
-      });
-    }
-  }
-}// Fonction fictive pour l'exemple : mets ici ton code pour recharger tes données
+  } // Fonction fictive pour l'exemple : mets ici ton code pour recharger tes données
+
   void _refreshDonnees() {
     setState(() {
       // Recharger les données depuis Supabase
@@ -4561,8 +5292,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
                 style: TextButton.styleFrom(
-    foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
-  ),
+                  foregroundColor: Colors.blueAccent, // Change la couleur du texte (et de l'effet de ripple)
+                ),
                 child: const Text("Annuler"),
               ),
               TextButton(
@@ -4856,8 +5587,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                   color: Colors.redAccent,
                                   size: 20,
                                 ),
-                                onPressed: () =>
-                                    _confirmDeleteTransaction(tx),
+                                onPressed: () => _confirmDeleteTransaction(tx),
                               ),
                             ],
                           ),
@@ -4959,7 +5689,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
   Future<void> _submitTransaction() async {
     if (!_formKey.currentState!.validate()) return;
-    
+
     if (_selectedInstrumentId == null ||
         _selectedInstrumentId == 'ADD_NEW_INSTRUMENT') {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -5005,7 +5735,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
       Navigator.pop(context, true);
     } on PostgrestException catch (error) {
-      
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -5015,7 +5744,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         );
       }
     } catch (e) {
-     
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red),
@@ -5221,7 +5949,6 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   }
 }
 
-
 // ==========================================
 // 6. LA PAGE D'AJOUT DE COMPTE
 // ==========================================
@@ -5339,10 +6066,11 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   void initState() {
     super.initState();
     final now = DateTime.now();
-    final formattedDate = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
-    
+    final formattedDate =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
+
     _commentController = TextEditingController(text: formattedDate);
-  
+
     _loadData(); // <-- Ajouté pour charger les comptes au démarrage
   }
 
@@ -5382,7 +6110,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
 
   Future<void> _submitInstrument() async {
     if (!_formKey.currentState!.validate()) return;
-    
+
     if (_selectedAccountId == null || _selectedAccountId == 'ADD_NEW_ACCOUNT') {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -5402,7 +6130,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
         'comment': _commentController.text.trim(),
         'category': _selectedCategory,
         'is_watchlist': widget.isWatchlist,
-        'account_id': _selectedAccountId, // <-- Ajouté : rattache l'instrument au compte
+        'account_id':
+            _selectedAccountId, // <-- Ajouté : rattache l'instrument au compte
       });
 
       if (!mounted) return;
@@ -5470,7 +6199,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                           (val == null || val.isEmpty) ? 'Champ requis' : null,
                     ),
                     const SizedBox(height: 16),
-                    
+
                     // --- CHAMP COMPTE ---
                     DropdownButtonFormField<dynamic>(
                       value: _selectedAccountId,
@@ -5525,8 +6254,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                         }
                       },
                     ),
-                    const SizedBox(height: 16),              
-                    
+                    const SizedBox(height: 16),
+
                     DropdownButtonFormField<String>(
                       value: _selectedCategory,
                       style: const TextStyle(color: Colors.white70),
@@ -5548,7 +6277,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                             ),
                           )
                           .toList(),
-                      onChanged: (value) => setState(() => _selectedCategory = value),
+                      onChanged: (value) =>
+                          setState(() => _selectedCategory = value),
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
@@ -5556,7 +6286,8 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                       style: const TextStyle(color: Colors.white),
                       maxLines: 3,
                       decoration: const InputDecoration(
-                        labelText: 'Commentaire (thèse d\'investissement, notes...)',
+                        labelText:
+                            'Commentaire (thèse d\'investissement, notes...)',
                         labelStyle: TextStyle(color: Colors.white70),
                         floatingLabelStyle: TextStyle(color: Colors.white),
                         border: OutlineInputBorder(),
@@ -5583,7 +6314,6 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   }
 }
 
-
 class UpdatePasswordScreen extends StatefulWidget {
   const UpdatePasswordScreen({super.key});
 
@@ -5605,7 +6335,9 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
     final newPassword = _newPasswordController.text.trim();
     if (newPassword.length < 6) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Le mot de passe doit faire au moins 6 caractères.')),
+        const SnackBar(
+          content: Text('Le mot de passe doit faire au moins 6 caractères.'),
+        ),
       );
       return;
     }
@@ -5625,7 +6357,7 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
           ),
         );
         // Redirige vers ton écran principal ou de connexion
-        Navigator.of(context).pushReplacementNamed('/home'); 
+        Navigator.of(context).pushReplacementNamed('/home');
       }
     } catch (e) {
       if (mounted) {
@@ -5643,7 +6375,10 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Nouveau mot de passe', style: TextStyle(color: Colors.white)),
+        title: const Text(
+          'Nouveau mot de passe',
+          style: TextStyle(color: Colors.white),
+        ),
         backgroundColor: Colors.black,
       ),
       body: Padding(
@@ -5657,7 +6392,11 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
               children: [
                 const Text(
                   'Entre ton nouveau mot de passe',
-                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 24),
@@ -5690,8 +6429,10 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
                     ),
                     child: _isLoading
                         ? const CircularProgressIndicator(color: Colors.black)
-                        : const Text('Valider le nouveau mot de passe',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        : const Text(
+                            'Valider le nouveau mot de passe',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
                   ),
                 ),
               ],
