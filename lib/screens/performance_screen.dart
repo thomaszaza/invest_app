@@ -279,16 +279,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           }
         });
 
-        final currentValue = await _getCurrentPortfolioValue();
-
-        if (mounted) {
-          setState(() {
-            _currentPortfolioValue = currentValue;
-          });
-        }
-
         _calculateChart();
-        _calculatePieData();
+        await _calculatePieData();
       }
     } catch (e) {
     } finally {
@@ -346,35 +338,81 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
   Future<double> _getCurrentPortfolioValue() async {
     try {
-      final viewData = await supabase.from('portfolio_view').select('*');
+      List<JsonMap> filteredTx = _allTransactions;
+      if (_selectedAccountId != null && _selectedAccountId != 'ALL') {
+        filteredTx = _allTransactions
+            .where(
+              (tx) =>
+                  tx['instruments'] != null &&
+                  tx['instruments']['account_id'].toString() ==
+                      _selectedAccountId,
+            )
+            .toList();
+      }
+
+      Map<String, JsonMap> tempPositions = {};
+
+      for (var tx in filteredTx) {
+        if (tx['instruments'] == null) continue;
+        String name = tx['instruments']['name'];
+        String isin = tx['instruments']['ticker_isin'] ?? '';
+        String type = tx['transaction_type'];
+        double qty = (tx['quantity'] ?? 0).toDouble();
+        double price = (tx['unit_price'] ?? 0).toDouble();
+        double fee = (tx['fees'] ?? 0).toDouble();
+
+        if (!tempPositions.containsKey(name)) {
+          tempPositions[name] = {
+            'name': name,
+            'isin': isin,
+            'id': tx['instruments']['id'],
+            'quantity': 0.0,
+            'totalBoughtQty': 0.0,
+            'totalInvested': 0.0,
+          };
+        }
+
+        if (type == 'Buy' || type == 'Deposit') {
+          tempPositions[name]!['quantity'] += qty;
+          tempPositions[name]!['totalBoughtQty'] += qty;
+          tempPositions[name]!['totalInvested'] += (qty * price) + fee;
+        } else if (type == 'Sell') {
+          double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
+              ? tempPositions[name]!['totalInvested'] /
+                    tempPositions[name]!['totalBoughtQty']
+              : 0.0;
+          tempPositions[name]!['quantity'] -= qty;
+          tempPositions[name]!['totalBoughtQty'] -= qty;
+          tempPositions[name]!['totalInvested'] -= (qty * currentPru);
+        }
+      }
 
       double totalValue = 0.0;
 
-      for (var row in viewData) {
-        final String name = row['name'].toString().toLowerCase();
-
-        if (name.contains('liquidit') || name.contains('cash')) {
+      for (var pos in tempPositions.values) {
+        if (pos['quantity'] <= 0.001) continue;
+        if (pos['name'].toString().toLowerCase().contains('liquidit') ||
+            pos['name'].toString().toUpperCase().contains('CASH')) {
           continue;
         }
 
-        final double quantity = (row['quantity'] ?? 0).toDouble();
-        final double pru = (row['pru'] ?? 0).toDouble();
+        double pru = pos['totalBoughtQty'] > 0.001
+            ? pos['totalInvested'] / pos['totalBoughtQty']
+            : 0.0;
 
-        if (quantity.isNaN || pru.isNaN) {
-          continue;
-        }
-
-        final double? livePrice = await PriceService.fetchLivePrice(
-          row['name'],
-          row['isin'] ?? '',
-          row['id'],
+        double? livePrice = await PriceService.fetchLivePrice(
+          pos['name'],
+          pos['isin'],
+          pos['id'],
         );
 
-        if (livePrice != null && !livePrice.isNaN) {
-          totalValue += livePrice * quantity;
-        } else {
-          totalValue += pru * quantity;
-        }
+        double value = (livePrice != null && !livePrice.isNaN)
+            ? livePrice * pos['quantity']
+            : pru * pos['quantity'];
+
+        if (value.isNaN || value <= 0) continue;
+
+        totalValue += value;
       }
 
       return totalValue;
@@ -794,6 +832,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     if (mounted) {
       setState(() {
+        _currentPortfolioValue = total;
         _pieData = slices;
         _isPieLoading = false;
       });

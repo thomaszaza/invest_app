@@ -18,11 +18,22 @@ export 'screens/forms_screens.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
+  Future<void> main() async {
+    WidgetsFlutterBinding.ensureInitialized();
 
-  await NotificationService.init();
+    // Remplace ton ancien Supabase.initialize par celui-ci :
+    await Supabase.initialize(
+      url: supabaseUrl,
+      anonKey: supabaseAnonKey,
+      authOptions: const FlutterAuthClientOptions(
+        authFlowType: AuthFlowType.implicit,
+      ),
+    );
 
-  runApp(const MyApp());
+    await NotificationService.init();
+
+    runApp(const MyApp());
+  }
 }
 
 class MyApp extends StatelessWidget {
@@ -43,8 +54,15 @@ class MyApp extends StatelessWidget {
 }
 
 /// Widget qui écoute l'état de l'authentification en temps réel
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  bool _isPasswordRecovery = false;
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +72,19 @@ class AuthGate extends StatelessWidget {
         final currentEvent = snapshot.data?.event;
 
         if (currentEvent == AuthChangeEvent.passwordRecovery) {
-          return const UpdatePasswordScreen();
+          _isPasswordRecovery = true;
+        } else if (currentEvent == AuthChangeEvent.signedOut) {
+          _isPasswordRecovery = false;
+        }
+
+        if (_isPasswordRecovery) {
+          return UpdatePasswordScreen(
+            onPasswordUpdated: () {
+              setState(() {
+                _isPasswordRecovery = false;
+              });
+            },
+          );
         }
 
         final session =
@@ -96,6 +126,7 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isSignUp = false;
 
   Future<void> _authenticate() async {
+    FocusScope.of(context).unfocus();
     setState(() => _isLoading = true);
     try {
       final email = _emailController.text.trim();
@@ -133,29 +164,85 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _resetPassword() async {
-    final email = _emailController.text.trim();
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Entre ton email d’abord pour réinitialiser ton mot de passe.',
-          ),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
+    FocusScope.of(context).unfocus();
 
+    final resetEmailController = TextEditingController(
+      text: _emailController.text.trim(),
+    );
+
+    final String? emailToReset = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: const Text(
+            'Mot de passe oublié',
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Entre ton adresse e-mail pour recevoir un lien de réinitialisation :',
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: resetEmailController,
+                keyboardType: TextInputType.emailAddress,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  labelText: 'Email',
+                  labelStyle: TextStyle(color: Colors.grey[400]),
+                  filled: true,
+                  fillColor: Colors.grey[900],
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text(
+                'Annuler',
+                style: TextStyle(color: Colors.white54),
+              ),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.greenAccent,
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () =>
+                  Navigator.pop(ctx, resetEmailController.text.trim()),
+              child: const Text(
+                'Envoyer',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (emailToReset == null || emailToReset.isEmpty) return;
+
+    setState(() => _isLoading = true);
     try {
       await Supabase.instance.client.auth.resetPasswordForEmail(
-        email,
-        redirectTo: 'https://thomaszaza.github.io/zaza-invest/',
+        emailToReset,
+        redirectTo: 'https://thomaszaza.github.io/invest_app/',
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'E-mail de réinitialisation envoyé ! Vérifie ta boîte mail.',
+              'E-mail de réinitialisation envoyé ! Vérifie ta boîte mail (et tes spams).',
             ),
             backgroundColor: Colors.green,
           ),
@@ -167,6 +254,8 @@ class _LoginScreenState extends State<LoginScreen> {
           SnackBar(content: Text('Erreur : $e'), backgroundColor: Colors.red),
         );
       }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -274,22 +363,30 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
                   ),
                   if (!_isSignUp) ...[
+                    const SizedBox(height: 4),
                     Align(
                       alignment: Alignment.centerRight,
                       child: TextButton(
-                        onPressed: _resetPassword,
+                        onPressed: _isLoading ? null : _resetPassword,
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 12,
+                          ),
+                        ),
                         child: Text(
                           'Mot de passe oublié ?',
                           style: TextStyle(
                             color: Colors.grey[400],
                             fontSize: 13,
+                            decoration: TextDecoration.underline,
                           ),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 12),
-                  ],
-                  const SizedBox(height: 28),
+                    const SizedBox(height: 8),
+                  ] else
+                    const SizedBox(height: 28),
                   SizedBox(
                     height: 50,
                     child: ElevatedButton(
@@ -402,7 +499,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 /// ÉCRAN DE RÉINITIALISATION DE MOT DE PASSE
 /// ==========================================
 class UpdatePasswordScreen extends StatefulWidget {
-  const UpdatePasswordScreen({super.key});
+  final VoidCallback? onPasswordUpdated;
+
+  const UpdatePasswordScreen({super.key, this.onPasswordUpdated});
 
   @override
   State<UpdatePasswordScreen> createState() => _UpdatePasswordScreenState();
@@ -442,7 +541,7 @@ class _UpdatePasswordScreenState extends State<UpdatePasswordScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.of(context).pushReplacementNamed('/home');
+        widget.onPasswordUpdated?.call();
       }
     } catch (e) {
       if (mounted) {
