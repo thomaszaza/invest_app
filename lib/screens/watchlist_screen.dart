@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../main.dart';
 
 class WatchlistScreen extends StatefulWidget {
@@ -12,7 +13,7 @@ class WatchlistScreen extends StatefulWidget {
 class _WatchlistScreenState extends State<WatchlistScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
-  List> _watchlist = [];
+  List<Map<String, dynamic>> _watchlist = [];
 
   @override
   void initState() {
@@ -27,9 +28,11 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
       final data = await supabase
           .from('instruments')
           .select('*')
-          .eq('is_watchlist', true);
+          .eq('is_watchlist', true)
+          .order('watchlist_position', ascending: true, nullsFirst: false);
 
-      List> list = List>.from(data);
+      final List<Map<String, dynamic>> list =
+          List<Map<String, dynamic>>.from(data);
 
       if (mounted) {
         setState(() {
@@ -38,12 +41,12 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         });
       }
 
-      List<Future<void>> futures = list.map((inst) async {
-        String isin = inst['ticker_isin'] ?? '';
+      final List<Future<void>> futures = list.map((inst) async {
+        final String isin = inst['ticker_isin'] ?? '';
         inst['isin'] = isin;
 
         try {
-          double? price = await PriceService.fetchLivePrice(
+          final double? price = await PriceService.fetchLivePrice(
             inst['name'],
             isin,
             inst['id'],
@@ -61,6 +64,31 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  Future<void> _onReorder(int oldIndex, int newIndex) async {
+    if (newIndex > oldIndex) newIndex -= 1;
+    setState(() {
+      final item = _watchlist.removeAt(oldIndex);
+      _watchlist.insert(newIndex, item);
+    });
+    try {
+      await Future.wait([
+        for (int i = 0; i < _watchlist.length; i++)
+          supabase
+              .from('instruments')
+              .update({'watchlist_position': i}).eq('id', _watchlist[i]['id']),
+      ]);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Erreur de sauvegarde de l'ordre : $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -96,7 +124,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           ),
           TextButton(
             onPressed: () async {
-              double? newPrice = double.tryParse(
+              final double? newPrice = double.tryParse(
                 priceController.text.replaceAll(',', '.'),
               );
               if (newPrice == null) return;
@@ -178,15 +206,18 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                     style: TextStyle(color: Colors.white54),
                   ),
                 )
-              : ListView.builder(
+              : ReorderableListView.builder(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   itemCount: _watchlist.length,
+                  onReorder: _onReorder,
+                  buildDefaultDragHandles: false,
                   itemBuilder: (context, index) {
                     final inst = _watchlist[index];
-                    double? price = inst['currentPrice'];
+                    final double? price = inst['currentPrice'];
 
                     return Card(
+                      key: ValueKey(inst['id']),
                       color: const Color(0xFF1C1C1E),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
@@ -280,6 +311,18 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                                     ),
                                     onPressed: () =>
                                         showCreateAlertDialog(context, inst),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  ReorderableDragStartListener(
+                                    index: index,
+                                    child: const Padding(
+                                      padding: EdgeInsets.all(6),
+                                      child: Icon(
+                                        Icons.drag_handle,
+                                        color: Colors.white38,
+                                        size: 22,
+                                      ),
+                                    ),
                                   ),
                                 ],
                               ),

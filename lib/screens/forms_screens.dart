@@ -1,4 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../services/price_service.dart';
@@ -436,6 +439,12 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   final _nameController = TextEditingController();
   final _tickerController = TextEditingController();
   late TextEditingController _commentController;
+
+  final _searchController = TextEditingController();
+  Timer? _debounce;
+  List _searchResults = [];
+  bool _isSearching = false;
+
   String? _selectedCategory;
   String? _selectedAccountId;
   List<JsonMap> _accountsList = [];
@@ -447,7 +456,7 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
     super.initState();
     final now = DateTime.now();
     final formattedDate =
-        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
 
     _commentController = TextEditingController(text: formattedDate);
     _loadData();
@@ -456,7 +465,64 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
   @override
   void dispose() {
     _commentController.dispose();
+    _debounce?.cancel();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String q) {
+    _debounce?.cancel();
+    if (q.trim().length < 2) {
+      setState(() => _searchResults = []);
+      return;
+    }
+    _debounce = Timer(
+      const Duration(milliseconds: 400),
+      () => _searchYahoo(q.trim()),
+    );
+  }
+
+  Future<void> _searchYahoo(String q) async {
+    setState(() => _isSearching = true);
+    try {
+      final target =
+          'https://query2.finance.yahoo.com/v1/finance/search?q=${Uri.encodeComponent(q)}&quotesCount=10&newsCount=0';
+      final url = Uri.parse(
+        'https://pfzsgikdqpnbyhaokdwn.supabase.co/functions/v1/fetch-price?url=${Uri.encodeComponent(target)}',
+      );
+      final res = await http.get(
+        url,
+        headers: {'Authorization': 'Bearer $supabaseAnonKey'},
+      );
+      if (res.statusCode == 200) {
+        const okTypes = {
+          'EQUITY',
+          'ETF',
+          'CRYPTOCURRENCY',
+          'MUTUALFUND',
+          'INDEX',
+        };
+        final quotes = (json.decode(res.body)['quotes'] as List? ?? [])
+            .where(
+              (x) => x['symbol'] != null && okTypes.contains(x['quoteType']),
+            )
+            .map(
+              (x) => {
+                'symbol': x['symbol'].toString(),
+                'name': (x['shortname'] ?? x['longname'] ?? x['symbol'])
+                    .toString(),
+                'exchange': (x['exchDisp'] ?? '').toString(),
+                'type': (x['quoteType'] ?? '').toString(),
+              },
+            )
+            .toList();
+        if (mounted) setState(() => _searchResults = quotes);
+      }
+    } catch (e) {
+      // on ignore : l'utilisateur peut toujours saisir à la main
+    } finally {
+      if (mounted) setState(() => _isSearching = false);
+    }
   }
 
   Future<void> _loadData() async {
@@ -551,6 +617,77 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                 key: _formKey,
                 child: ListView(
                   children: [
+                    TextField(
+                      controller: _searchController,
+                      onChanged: _onSearchChanged,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText:
+                            'Rechercher une entreprise (ex: LVMH, Apple...)',
+                        hintStyle: const TextStyle(color: Colors.white54),
+                        prefixIcon: const Icon(
+                          Icons.search,
+                          color: Colors.white54,
+                        ),
+                        suffixIcon: _isSearching
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: Colors.grey[900],
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                    if (_searchResults.isNotEmpty)
+                      Container(
+                        margin: const EdgeInsets.only(top: 6),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1C1C1E),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          children: _searchResults.map((r) {
+                            return ListTile(
+                              dense: true,
+                              title: Text(
+                                r['name']!,
+                                style: const TextStyle(color: Colors.white),
+                              ),
+                              subtitle: Text(
+                                '${r['symbol']} • ${r['exchange']} • ${r['type']}',
+                                style: const TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              onTap: () {
+                                setState(() {
+                                  _nameController.text = r['name']!;
+                                  _tickerController.text = r['symbol']!;
+                                  _searchResults = [];
+                                  _searchController.clear();
+                                });
+                                FocusScope.of(context).unfocus();
+                              },
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    const SizedBox(height: 24),
+                    const Divider(color: Colors.white12),
+                    const SizedBox(height: 8),
                     TextFormField(
                       controller: _nameController,
                       style: const TextStyle(color: Colors.white),

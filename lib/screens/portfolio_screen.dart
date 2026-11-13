@@ -1,9 +1,11 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart' as fp;
 import 'package:csv/csv.dart' as my_csv;
 import 'package:intl/intl.dart';
+
 import '../main.dart';
 
 class PortfolioScreen extends StatefulWidget {
@@ -17,11 +19,11 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
   bool _isImporting = false;
-  List> _instruments = [];
-  List> _history = [];
-  Map<String, double> _livePrices = {};
-  Map<String, double> _ownedQuantities = {};
-  List> _accountsList = [];
+  List<JsonMap> _instruments = [];
+  List<JsonMap> _history = [];
+  DoubleMap _livePrices = {};
+  DoubleMap _ownedQuantities = {};
+  List<JsonMap> _accountsList = [];
 
   @override
   void initState() {
@@ -29,7 +31,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     _loadPortfolioData();
   }
 
-  Future<void> _showEditTransactionDialog(Map<String, dynamic> tx) async {
+  Future<void> _showEditTransactionDialog(JsonMap tx) async {
     final TextEditingController qtyController = TextEditingController(
       text: tx['quantity'].toString(),
     );
@@ -118,9 +120,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.blueAccent,
-              ),
+              style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
               child: const Text("Annuler"),
             ),
             TextButton(
@@ -138,10 +138,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                     'price': newPrice,
                   }, onConflict: 'instrument_id,date');
 
-                  PriceCache.set(
-                    tx['instrument_id'].toString(),
-                    newPrice,
-                  );
+                  PriceCache.set(tx['instrument_id'].toString(), newPrice);
 
                   if (context.mounted) {
                     Navigator.pop(context);
@@ -172,8 +169,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     );
   }
 
-  Future<void> _confirmDeleteTransaction(Map<String, dynamic> tx) async {
-    bool confirm = await showDialog(
+  Future<void> _confirmDeleteTransaction(JsonMap tx) async {
+    bool confirm =
+        await showDialog(
           context: context,
           builder: (context) => AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
@@ -235,7 +233,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     }
   }
 
-  Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
+  Future<void> _showManualPriceDialog(JsonMap inst) async {
     final TextEditingController priceController = TextEditingController();
 
     showDialog(
@@ -330,7 +328,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
           .select('id, name')
           .order('name');
 
-      Map<String, double> qtys = {};
+      DoubleMap qtys = {};
       for (var tx in historyData) {
         if (tx['instruments'] == null) continue;
         String instName = tx['instruments']['name'];
@@ -348,15 +346,15 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
       if (mounted) {
         setState(() {
-          _history = List>.from(historyData);
-          _instruments = List>.from(instrumentsData);
-          _accountsList = List>.from(accountsData);
+          _history = List<JsonMap>.from(historyData);
+          _instruments = List<JsonMap>.from(instrumentsData);
+          _accountsList = List<JsonMap>.from(accountsData);
           _ownedQuantities = qtys;
           _isLoading = false;
         });
       }
 
-      List<Future<void>> priceFutures = _instruments.map((inst) async {
+      List<FutureVoid> priceFutures = _instruments.map((inst) async {
         try {
           double? livePrice = await PriceService.fetchLivePrice(
             inst['name'],
@@ -378,7 +376,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     }
   }
 
-  Future<void> _showEditAccountDialog(Map<String, dynamic> account) async {
+  Future<void> _showEditAccountDialog(JsonMap account) async {
     final TextEditingController nameController = TextEditingController(
       text: account['name'],
     );
@@ -406,9 +404,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.blueAccent,
-            ),
+            style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
             child: const Text("Annuler"),
           ),
           TextButton(
@@ -523,7 +519,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
 
         String delimiter = csvString.contains(';') ? ';' : ',';
 
-        List<List<dynamic>> rowsAsListOfValues = my_csv.CsvToListConverter(
+        List<DynamicList> rowsAsListOfValues = my_csv.CsvToListConverter(
           fieldDelimiter: delimiter,
           eol: '\n',
         ).convert(csvString);
@@ -531,20 +527,20 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
         if (rowsAsListOfValues.isEmpty) return;
 
         if (rowsAsListOfValues.first[0].toString().toLowerCase().contains(
-              'date',
-            )) {
+          'date',
+        )) {
           rowsAsListOfValues.removeAt(0);
         }
 
         final dateFormat = DateFormat('dd/MM/yyyy');
         const validTypes = ['Buy', 'Sell', 'Deposit', 'Dividend', 'Withdrawal'];
 
-        Map<String, dynamic> accountCache = {
+        JsonMap accountCache = {
           for (var acc in _accountsList)
             (acc['name'] as String).toLowerCase(): acc['id'],
         };
 
-        Map<String, dynamic> instrumentCache = {
+        JsonMap instrumentCache = {
           for (var inst in _instruments)
             "${inst['account_id']}_${(inst['name'] as String).toLowerCase()}":
                 inst['id'],
@@ -569,15 +565,18 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             String name = row[1].toString().trim();
             String tickerIsin = row[2].toString().trim();
             String txType = row[3].toString().trim();
-            double quantity = double.tryParse(
+            double quantity =
+                double.tryParse(
                   row[4].toString().trim().replaceAll(',', '.'),
                 ) ??
                 0;
-            double unitPrice = double.tryParse(
+            double unitPrice =
+                double.tryParse(
                   row[5].toString().trim().replaceAll(',', '.'),
                 ) ??
                 0;
-            double fees = double.tryParse(
+            double fees =
+                double.tryParse(
                   row[6].toString().trim().replaceAll(',', '.'),
                 ) ??
                 0;
@@ -668,8 +667,9 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
     }
   }
 
-  Future<void> _confirmDeleteAccount(Map<String, dynamic> account) async {
-    bool confirm = await showDialog(
+  Future<void> _confirmDeleteAccount(JsonMap account) async {
+    bool confirm =
+        await showDialog(
           context: context,
           builder: (context) => AlertDialog(
             backgroundColor: const Color(0xFF1C1C1E),
@@ -686,9 +686,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context, false),
-                style: TextButton.styleFrom(
-                  foregroundColor: Colors.blueAccent,
-                ),
+                style: TextButton.styleFrom(foregroundColor: Colors.blueAccent),
                 child: const Text("Annuler"),
               ),
               TextButton(

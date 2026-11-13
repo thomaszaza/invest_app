@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../main.dart';
 
 class PositionsScreen extends StatefulWidget {
@@ -13,8 +14,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
 
-  List> _allPositions = [];
-  List> _positions = [];
+  List<JsonMap> _allPositions = [];
+  List<JsonMap> _positions = [];
   List<String> _accounts = ['Tous les comptes'];
   String _selectedAccount = 'Tous les comptes';
 
@@ -30,7 +31,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
   void _filterPositions() {
     double newInvested = 0.0;
     double newGlobal = 0.0;
-    List> filtered = [];
+    List<JsonMap> filtered = [];
 
     for (var pos in _allPositions) {
       if (_selectedAccount == 'Tous les comptes' ||
@@ -61,7 +62,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
     try {
       final viewData = await supabase.from('portfolio_view').select('*');
 
-      List> validPositions = [];
+      List<JsonMap> validPositions = [];
       Set<String> foundAccounts = {'Tous les comptes'};
 
       for (var row in viewData) {
@@ -74,7 +75,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
 
           foundAccounts.add(accountName);
 
-          Map<String, dynamic> pos = {
+          JsonMap pos = {
             'id': row['id'],
             'name': row['name'],
             'isin': row['isin'] ?? '',
@@ -98,7 +99,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
         setState(() => _isLoading = false);
       }
 
-      List<Future<void>> fetchFutures = _allPositions.map((pos) async {
+      List<FutureVoid> fetchFutures = _allPositions.map((pos) async {
         try {
           double? livePrice = await PriceService.fetchLivePrice(
             pos['name'],
@@ -213,8 +214,13 @@ class _PositionsScreenState extends State<PositionsScreen> {
                           body: {
                             'type': feedbackType,
                             'message': feedbackController.text.trim(),
-                            'user_email': Supabase
-                                    .instance.client.auth.currentUser?.email ??
+                            'user_email':
+                                Supabase
+                                    .instance
+                                    .client
+                                    .auth
+                                    .currentUser
+                                    ?.email ??
                                 'inconnu',
                           },
                         );
@@ -276,8 +282,9 @@ class _PositionsScreenState extends State<PositionsScreen> {
       }
     }
 
-    Color globalColor =
-        globalPerfAbs >= 0 ? Colors.greenAccent : Colors.redAccent;
+    Color globalColor = globalPerfAbs >= 0
+        ? Colors.greenAccent
+        : Colors.redAccent;
     String globalSign = globalPerfAbs >= 0 ? "+" : "";
 
     return Scaffold(

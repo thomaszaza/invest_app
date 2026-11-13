@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
+
 import '../main.dart';
 
 class PerformanceScreen extends StatefulWidget {
@@ -12,7 +13,7 @@ class PerformanceScreen extends StatefulWidget {
 }
 
 class _PerformanceScreenState extends State<PerformanceScreen> {
-  List> _benchmarkList = [];
+  List<JsonMap> _benchmarkList = [];
   String? _selectedBenchmarkId;
   List<FlSpot> _chartDataBenchmark = [];
 
@@ -20,9 +21,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   bool _isLoading = true;
 
   String _selectedPeriod = '1M';
-  final List<String> _periods = ['1D', '1S', '1M', '3M', 'YTD', '1A', 'ALL'];
+  final List<String> _periods = ['1D', '1W', '1M', '3M', 'YTD', '1A', 'ALL'];
 
-  List> _accountsList = [];
+  List<JsonMap> _accountsList = [];
   String? _selectedAccountId;
 
   double _totalDividends = 0.0;
@@ -36,14 +37,20 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
   List<String> _chartDates = [];
 
-  List> _allTransactions = [];
-  Map<String, Map<String, double>> _yahooHistories = {};
-  Map<String, Map<String, double>> _yahooIntraday = {};
+  // --- Mesure à deux doigts ---
+  static const double _leftReserved = 50.0; // = reservedSize des leftTitles
+  final Map<int, Offset> _pointers = {};
+  int? _measureA;
+  int? _measureB;
+
+  List<JsonMap> _allTransactions = [];
+  Map<String, DoubleMap> _yahooHistories = {};
+  Map<String, DoubleMap> _yahooIntraday = {};
   Map<String, String> _instrumentIsins = {};
-  Map<String, Map<String, dynamic>> _aferData = {};
+  Map<String, JsonMap> _aferData = {};
   bool _isLoadingIntraday = false;
 
-  List> _pieData = [];
+  List<JsonMap> _pieData = [];
   bool _isPieLoading = true;
 
   final List<Color> _pieColors = [
@@ -65,6 +72,100 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     _loadAllData();
   }
 
+  // ---------------------------------------------------------------
+  // MESURE ENTRE DEUX POINTS
+  // ---------------------------------------------------------------
+  void _recomputeMeasure(double chartWidth, int count) {
+    if (_pointers.length < 2 || count < 2) {
+      _measureA = null;
+      _measureB = null;
+      return;
+    }
+    final plotW = chartWidth - _leftReserved;
+    if (plotW <= 0) return;
+
+    int toIndex(double dx) => (((dx - _leftReserved) / plotW) * (count - 1))
+        .round()
+        .clamp(0, count - 1)
+        .toInt();
+
+    final idx = _pointers.values.take(2).map((o) => toIndex(o.dx)).toList()
+      ..sort();
+    _measureA = idx[0];
+    _measureB = idx[1];
+  }
+
+  void _clearMeasure() {
+    _pointers.clear();
+    _measureA = null;
+    _measureB = null;
+  }
+
+  Widget _buildMeasureBox() {
+    final a = _measureA!, b = _measureB!;
+    if (a >= _chartDataValue.length ||
+        b >= _chartDataValue.length ||
+        a >= _chartDataPercent.length ||
+        b >= _chartDataPercent.length ||
+        a >= _chartDates.length ||
+        b >= _chartDates.length) {
+      return const SizedBox();
+    }
+
+    final v1 = _chartDataValue[a].y, v2 = _chartDataValue[b].y;
+    final p1 = _chartDataPercent[a].y, p2 = _chartDataPercent[b].y;
+
+    final diffAbs = v2 - v1;
+    // Performance cumulée entre A et B : on rapporte les deux
+    // rendements cumulés depuis le début de la période.
+    final pct = (1 + p1 / 100).abs() > 0.0001
+        ? ((1 + p2 / 100) / (1 + p1 / 100) - 1) * 100
+        : 0.0;
+
+    final isPositive = _showPercent ? pct >= 0 : diffAbs >= 0;
+    final color = isPositive ? Colors.greenAccent : Colors.redAccent;
+    final signAbs = diffAbs >= 0 ? '+' : '';
+    final signPct = pct >= 0 ? '+' : '';
+
+    final intraday = _selectedPeriod == '1D' || _selectedPeriod == '1W';
+    final fmt = DateFormat(intraday ? 'dd/MM HH:mm' : 'dd/MM/yyyy');
+    final d1 = fmt.format(DateTime.parse(_chartDates[a]));
+    final d2 = fmt.format(DateTime.parse(_chartDates[b]));
+
+    final String line = _showPercent
+        ? "$signPct${pct.toStringAsFixed(2)} %"
+        : "$signAbs${diffAbs.toStringAsFixed(2)} €   ($signPct${pct.toStringAsFixed(2)} %)";
+
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFF2C2C2E),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              "$d1  →  $d2",
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              line,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _loadAllData() async {
     setState(() => _isLoading = true);
 
@@ -82,13 +183,13 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       ]);
       final accountsData = results[0];
       final txData = results[1];
-      _allTransactions = List>.from(txData);
+      _allTransactions = List<JsonMap>.from(txData);
       final dailyData = results[2];
-      Map<String, double> aferLatestPrices = {};
+      DoubleMap aferLatestPrices = {};
       for (var row in dailyData) {
         if (row['instruments'] != null) {
-          aferLatestPrices[row['instruments']['name']] =
-              (row['price'] as num).toDouble();
+          aferLatestPrices[row['instruments']['name']] = (row['price'] as num)
+              .toDouble();
         }
       }
 
@@ -161,7 +262,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         setState(() {
           _accountsList = [
             {'id': 'ALL', 'name': 'Tous les comptes'},
-            ...List>.from(accountsData),
+            ...List<JsonMap>.from(accountsData),
           ];
 
           if (_selectedAccountId == null && _accountsList.isNotEmpty) {
@@ -170,7 +271,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
           _benchmarkList = [
             {'id': 'NONE', 'name': 'Aucun Benchmark'},
-            ...List>.from(benchmarkData),
+            ...List<JsonMap>.from(benchmarkData),
           ];
 
           if (_selectedBenchmarkId == null) {
@@ -196,7 +297,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   }
 
   double _interpolatedPrice(
-    List<MapEntry<DateTime, double>> hist,
+    PriceEntryList hist,
     DateTime d,
     double fallbackPru,
   ) {
@@ -288,7 +389,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     DateTime endDate = DateTime.now();
     DateTime startDate = endDate;
 
-    List> filteredTx = _allTransactions;
+    List<JsonMap> filteredTx = _allTransactions;
     if (_selectedAccountId != 'ALL') {
       filteredTx = _allTransactions
           .where(
@@ -302,7 +403,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     if (_selectedPeriod == '1D') {
       startDate = endDate.subtract(const Duration(hours: 24));
-    } else if (_selectedPeriod == '1S') {
+    } else if (_selectedPeriod == '1W') {
       startDate = endDate.subtract(const Duration(days: 7));
     } else if (_selectedPeriod == '1M') {
       startDate = endDate.subtract(const Duration(days: 30));
@@ -334,18 +435,19 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
     }
 
-    final Map<String, Map<String, double>> histSource =
-        ((_selectedPeriod == '1S' || _selectedPeriod == '1D') &&
-                _yahooIntraday.isNotEmpty)
-            ? _yahooIntraday
-            : _yahooHistories;
+    final Map<String, DoubleMap> histSource =
+        ((_selectedPeriod == '1W' || _selectedPeriod == '1D') &&
+            _yahooIntraday.isNotEmpty)
+        ? _yahooIntraday
+        : _yahooHistories;
 
-    Map<String, List<MapEntry<DateTime, double>>> sortedHistories = {};
+    Map<String, PriceEntryList> sortedHistories = {};
     histSource.forEach((name, hist) {
-      final entries = hist.entries
-          .map((e) => MapEntry(DateTime.parse(e.key), e.value))
-          .toList()
-        ..sort((a, b) => a.key.compareTo(b.key));
+      final entries =
+          hist.entries
+              .map((e) => MapEntry(DateTime.parse(e.key), e.value))
+              .toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
       sortedHistories[name] = entries;
     });
 
@@ -355,7 +457,6 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     List<double> investedSeries = [];
     _chartDates.clear();
 
-    double lastValue = 0.0;
     int dayIndex = 0;
 
     String? benchName;
@@ -367,10 +468,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       } catch (e) {}
     }
 
-    List<MapEntry<DateTime, double>>? benchSortedHist =
-        benchName != null ? sortedHistories[benchName] : null;
-    Map<String, dynamic>? benchAferInfo =
-        benchName != null ? _aferData[benchName] : null;
+    PriceEntryList? benchSortedHist = benchName != null
+        ? sortedHistories[benchName]
+        : null;
+    JsonMap? benchAferInfo = benchName != null ? _aferData[benchName] : null;
 
     if (benchName != null &&
         (benchSortedHist == null || benchSortedHist.isEmpty) &&
@@ -379,11 +480,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     }
     double? benchStartPrice;
 
-    List> sortedTx = List>.from(
-      filteredTx,
-    )..sort((a, b) => a['date'].toString().compareTo(b['date'].toString()));
+    List<JsonMap> sortedTx = List<JsonMap>.from(filteredTx)
+      ..sort((a, b) => a['date'].toString().compareTo(b['date'].toString()));
 
-    Map<String, Map<String, double>> instStats = {};
+    Map<String, DoubleMap> instStats = {};
     double cumulativeRealizedGains = 0.0;
     int txPointer = 0;
 
@@ -392,7 +492,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       case '1D':
         chartStep = const Duration(minutes: 15);
         break;
-      case '1S':
+      case '1W':
         chartStep = const Duration(hours: 1);
         break;
       case '1M':
@@ -412,10 +512,12 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         break;
     }
 
-    for (DateTime d = startDate;
-        d.isBefore(endDate) || d.isAtSameMomentAs(endDate);
-        d = d.add(chartStep)) {
-      if (_selectedPeriod == '1S' || _selectedPeriod == '1D') {
+    for (
+      DateTime d = startDate;
+      d.isBefore(endDate) || d.isAtSameMomentAs(endDate);
+      d = d.add(chartStep)
+    ) {
+      if (_selectedPeriod == '1W' || _selectedPeriod == '1D') {
         if (d.hour < 9 || d.hour > 17) continue;
         if (d.weekday == DateTime.saturday || d.weekday == DateTime.sunday) {
           continue;
@@ -458,7 +560,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           } else if (type == 'Sell') {
             double currentPru = instStats[instName]!['boughtQty']! > 0.001
                 ? instStats[instName]!['invested']! /
-                    instStats[instName]!['boughtQty']!
+                      instStats[instName]!['boughtQty']!
                 : 0.0;
             cumulativeRealizedGains += q * (p - currentPru) - fee;
             instStats[instName]!['qty'] = instStats[instName]!['qty']! - q;
@@ -507,7 +609,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
             } else {
               int totalDays = endDate.difference(firstDate).inDays;
               int daysSinceFirst = d.difference(firstDate).inDays;
-              price = globalPru +
+              price =
+                  globalPru +
                   ((latestPrice - globalPru) * (daysSinceFirst / totalDays));
             }
           }
@@ -539,7 +642,8 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           } else {
             int totalDays = endDate.difference(firstDate).inDays;
             int daysSinceFirst = d.difference(firstDate).inDays;
-            benchPrice = globalPru +
+            benchPrice =
+                globalPru +
                 ((latestPrice - globalPru) * (daysSinceFirst / totalDays));
           }
         }
@@ -553,14 +657,14 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
 
       _chartDates.add(currentDateStr);
-      lastValue = dailyPortfolioValue;
       dayIndex++;
     }
 
     double startValue = spotsValue.isNotEmpty ? spotsValue.first.y : 0.0;
     double endValue = spotsValue.isNotEmpty ? spotsValue.last.y : 0.0;
-    double startInvested =
-        investedSeries.isNotEmpty ? investedSeries.first : 0.0;
+    double startInvested = investedSeries.isNotEmpty
+        ? investedSeries.first
+        : 0.0;
     double endInvested = investedSeries.isNotEmpty ? investedSeries.last : 0.0;
 
     double netDeposits = endInvested - startInvested;
@@ -585,6 +689,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
     }
 
     setState(() {
+      _clearMeasure();
       _totalDividends = divs;
       _chartDataValue = spotsValue;
       _chartDataPercent = spotsPercent;
@@ -597,7 +702,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   Future<void> _calculatePieData() async {
     setState(() => _isPieLoading = true);
 
-    List> filteredTx = _allTransactions;
+    List<JsonMap> filteredTx = _allTransactions;
     if (_selectedAccountId != null && _selectedAccountId != 'ALL') {
       filteredTx = _allTransactions
           .where(
@@ -609,7 +714,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
           .toList();
     }
 
-    Map<String, Map<String, dynamic>> tempPositions = {};
+    Map<String, JsonMap> tempPositions = {};
 
     for (var tx in filteredTx) {
       if (tx['instruments'] == null) continue;
@@ -638,7 +743,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       } else if (type == 'Sell') {
         double currentPru = tempPositions[name]!['totalBoughtQty'] > 0.001
             ? tempPositions[name]!['totalInvested'] /
-                tempPositions[name]!['totalBoughtQty']
+                  tempPositions[name]!['totalBoughtQty']
             : 0.0;
         tempPositions[name]!['quantity'] -= qty;
         tempPositions[name]!['totalBoughtQty'] -= qty;
@@ -646,7 +751,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       }
     }
 
-    List> slices = [];
+    List<JsonMap> slices = [];
 
     for (var pos in tempPositions.values) {
       if (pos['quantity'] <= 0.001) continue;
@@ -682,8 +787,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     for (int i = 0; i < slices.length; i++) {
       slices[i]['color'] = _pieColors[i % _pieColors.length];
-      slices[i]['percent'] =
-          total > 0.001 ? (slices[i]['value'] / total) * 100 : 0.0;
+      slices[i]['percent'] = total > 0.001
+          ? (slices[i]['value'] / total) * 100
+          : 0.0;
     }
 
     if (mounted) {
@@ -740,8 +846,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         b['name'],
                         style: TextStyle(
                           color: Colors.white,
-                          fontWeight:
-                              selected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: selected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                         ),
                       ),
                       trailing: selected
@@ -768,8 +875,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    List<FlSpot> activeChartData =
-        _showPercent ? _chartDataPercent : _chartDataValue;
+    List<FlSpot> activeChartData = _showPercent
+        ? _chartDataPercent
+        : _chartDataValue;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -787,6 +895,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
       body: _isLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.white))
           : SingleChildScrollView(
+              // Bloque le scroll vertical pendant la mesure à deux doigts
+              physics: _pointers.length >= 2
+                  ? const NeverScrollableScrollPhysics()
+                  : null,
               child: Column(
                 children: [
                   Container(
@@ -922,7 +1034,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             GestureDetector(
-                              onTap: () => setState(() => _showPercent = false),
+                              onTap: () => setState(() {
+                                _showPercent = false;
+                                _clearMeasure();
+                              }),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 20,
@@ -948,7 +1063,10 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                             ),
                             const SizedBox(width: 10),
                             GestureDetector(
-                              onTap: () => setState(() => _showPercent = true),
+                              onTap: () => setState(() {
+                                _showPercent = true;
+                                _clearMeasure();
+                              }),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 20,
@@ -1004,237 +1122,343 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         left: 10,
                         bottom: 20,
                       ),
-                      child: activeChartData.isEmpty
+                      child: _isLoadingIntraday
+                          ? const Center(
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                              ),
+                            )
+                          : activeChartData.isEmpty
                           ? const Center(
                               child: Text(
                                 "Pas de données sur cette période",
                                 style: TextStyle(color: Colors.white54),
                               ),
                             )
-                          : LineChart(
-                              LineChartData(
-                                gridData: FlGridData(
-                                  show: true,
-                                  drawVerticalLine: false,
-                                  getDrawingHorizontalLine: (value) => FlLine(
-                                    color: Colors.white10,
-                                    strokeWidth: 1,
-                                  ),
-                                ),
-                                titlesData: FlTitlesData(
-                                  show: true,
-                                  rightTitles: const AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
-                                  topTitles: const AxisTitles(
-                                    sideTitles: SideTitles(showTitles: false),
-                                  ),
-                                  bottomTitles: AxisTitles(
-                                    sideTitles: SideTitles(
-                                      showTitles: true,
-                                      reservedSize: 30,
-                                      interval:
-                                          (activeChartData.length / 5)
-                                                      .ceilToDouble() ==
-                                                  0
-                                              ? 1
-                                              : (activeChartData.length / 5)
-                                                  .ceilToDouble(),
-                                      getTitlesWidget: (value, meta) {
-                                        int index = value.toInt();
-                                        if (index >= 0 &&
-                                            index < _chartDates.length) {
-                                          DateTime d = DateTime.parse(
-                                            _chartDates[index],
-                                          );
-                                          String day = d.day
-                                              .toString()
-                                              .padLeft(2, '0');
-                                          String month = d.month
-                                              .toString()
-                                              .padLeft(2, '0');
+                          : LayoutBuilder(
+                              builder: (context, constraints) {
+                                final w = constraints.maxWidth;
+                                final count = activeChartData.length;
 
-                                          if (_selectedPeriod == '1D') {
-                                            String hour = d.hour
-                                                .toString()
-                                                .padLeft(2, '0');
-                                            String min = d.minute
-                                                .toString()
-                                                .padLeft(2, '0');
-                                            return Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 8.0,
-                                              ),
-                                              child: Text(
-                                                '$hour:$min',
-                                                style: const TextStyle(
-                                                  color: Colors.white54,
-                                                  fontSize: 11,
+                                void onPointer(
+                                  PointerEvent e, {
+                                  bool remove = false,
+                                }) {
+                                  final before = _pointers.length;
+                                  if (remove) {
+                                    _pointers.remove(e.pointer);
+                                  } else {
+                                    _pointers[e.pointer] = e.localPosition;
+                                  }
+                                  if (_pointers.length < 2 && before < 2) {
+                                    return;
+                                  }
+                                  setState(() => _recomputeMeasure(w, count));
+                                }
+
+                                return Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    Listener(
+                                      onPointerDown: onPointer,
+                                      onPointerMove: onPointer,
+                                      onPointerUp: (e) =>
+                                          onPointer(e, remove: true),
+                                      onPointerCancel: (e) =>
+                                          onPointer(e, remove: true),
+                                      child: LineChart(
+                                        LineChartData(
+                                          gridData: FlGridData(
+                                            show: true,
+                                            drawVerticalLine: false,
+                                            getDrawingHorizontalLine: (value) =>
+                                                FlLine(
+                                                  color: Colors.white10,
+                                                  strokeWidth: 1,
                                                 ),
-                                              ),
-                                            );
-                                          }
-
-                                          if (_selectedPeriod == 'ALL' ||
-                                              _selectedPeriod == '1A') {
-                                            return Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 8.0,
-                                              ),
-                                              child: Text(
-                                                '$month/${d.year.toString().substring(2)}',
-                                                style: const TextStyle(
-                                                  color: Colors.white54,
-                                                  fontSize: 11,
-                                                ),
-                                              ),
-                                            );
-                                          }
-
-                                          return Padding(
-                                            padding: const EdgeInsets.only(
-                                              top: 8.0,
-                                            ),
-                                            child: Text(
-                                              '$day/$month',
-                                              style: const TextStyle(
-                                                color: Colors.white54,
-                                                fontSize: 11,
+                                          ),
+                                          titlesData: FlTitlesData(
+                                            show: true,
+                                            rightTitles: const AxisTitles(
+                                              sideTitles: SideTitles(
+                                                showTitles: false,
                                               ),
                                             ),
-                                          );
-                                        }
-                                        return const Text('');
-                                      },
-                                    ),
-                                  ),
-                                  leftTitles: AxisTitles(
-                                    sideTitles: SideTitles(
-                                      showTitles: true,
-                                      reservedSize: 50,
-                                      getTitlesWidget: (value, meta) {
-                                        if (_showPercent) {
-                                          return Text(
-                                            '${value.toInt()}%',
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 11,
-                                            ),
-                                          );
-                                        } else {
-                                          return Text(
-                                            '${value.toInt()} €',
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 11,
-                                            ),
-                                          );
-                                        }
-                                      },
-                                    ),
-                                  ),
-                                ),
-                                borderData: FlBorderData(show: false),
-                                lineTouchData: LineTouchData(
-                                  touchTooltipData: LineTouchTooltipData(
-                                    getTooltipItems: (touchedSpots) {
-                                      String formattedDate = "";
-                                      if (touchedSpots.isNotEmpty) {
-                                        int index =
-                                            touchedSpots.first.x.toInt();
-                                        if (index < _chartDates.length) {
-                                          DateTime parsedDate = DateTime.parse(
-                                            _chartDates[index],
-                                          );
-                                          formattedDate = DateFormat(
-                                            'dd/MM/yyyy',
-                                          ).format(parsedDate);
-                                        }
-                                      }
-
-                                      return touchedSpots.map((spot) {
-                                        bool isBenchmark = spot.barIndex == 1;
-                                        bool isFirst =
-                                            spot == touchedSpots.first;
-
-                                        String valStr = _showPercent
-                                            ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
-                                            : "${spot.y.toStringAsFixed(2)} €";
-
-                                        Color valueColor;
-                                        if (isBenchmark) {
-                                          valueColor = Colors.purpleAccent;
-                                        } else {
-                                          valueColor =
-                                              _periodPerformanceAbs >= 0
-                                                  ? Colors.greenAccent
-                                                  : Colors.redAccent;
-                                        }
-
-                                        List<TextSpan> children = [];
-
-                                        if (isFirst) {
-                                          children.add(
-                                            TextSpan(
-                                              text: "$formattedDate\n",
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
+                                            topTitles: const AxisTitles(
+                                              sideTitles: SideTitles(
+                                                showTitles: false,
                                               ),
                                             ),
-                                          );
-                                        }
+                                            bottomTitles: AxisTitles(
+                                              sideTitles: SideTitles(
+                                                showTitles: true,
+                                                reservedSize: 30,
+                                                interval:
+                                                    (activeChartData.length / 5)
+                                                            .ceilToDouble() ==
+                                                        0
+                                                    ? 1
+                                                    : (activeChartData.length /
+                                                              5)
+                                                          .ceilToDouble(),
+                                                getTitlesWidget: (value, meta) {
+                                                  int index = value.toInt();
+                                                  if (index >= 0 &&
+                                                      index <
+                                                          _chartDates.length) {
+                                                    DateTime d = DateTime.parse(
+                                                      _chartDates[index],
+                                                    );
+                                                    String day = d.day
+                                                        .toString()
+                                                        .padLeft(2, '0');
+                                                    String month = d.month
+                                                        .toString()
+                                                        .padLeft(2, '0');
 
-                                        children.add(
-                                          TextSpan(
-                                            text: valStr,
-                                            style: TextStyle(
-                                              color: valueColor,
-                                              fontWeight: FontWeight.bold,
+                                                    if (_selectedPeriod ==
+                                                        '1D') {
+                                                      String hour = d.hour
+                                                          .toString()
+                                                          .padLeft(2, '0');
+                                                      String min = d.minute
+                                                          .toString()
+                                                          .padLeft(2, '0');
+                                                      return Padding(
+                                                        padding:
+                                                            const EdgeInsets.only(
+                                                              top: 8.0,
+                                                            ),
+                                                        child: Text(
+                                                          '$hour:$min',
+                                                          style:
+                                                              const TextStyle(
+                                                                color: Colors
+                                                                    .white54,
+                                                                fontSize: 11,
+                                                              ),
+                                                        ),
+                                                      );
+                                                    }
+
+                                                    if (_selectedPeriod ==
+                                                            'ALL' ||
+                                                        _selectedPeriod ==
+                                                            '1A') {
+                                                      return Padding(
+                                                        padding:
+                                                            const EdgeInsets.only(
+                                                              top: 8.0,
+                                                            ),
+                                                        child: Text(
+                                                          '$month/${d.year.toString().substring(2)}',
+                                                          style:
+                                                              const TextStyle(
+                                                                color: Colors
+                                                                    .white54,
+                                                                fontSize: 11,
+                                                              ),
+                                                        ),
+                                                      );
+                                                    }
+
+                                                    return Padding(
+                                                      padding:
+                                                          const EdgeInsets.only(
+                                                            top: 8.0,
+                                                          ),
+                                                      child: Text(
+                                                        '$day/$month',
+                                                        style: const TextStyle(
+                                                          color: Colors.white54,
+                                                          fontSize: 11,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
+                                                  return const Text('');
+                                                },
+                                              ),
+                                            ),
+                                            leftTitles: AxisTitles(
+                                              sideTitles: SideTitles(
+                                                showTitles: true,
+                                                reservedSize: _leftReserved,
+                                                getTitlesWidget: (value, meta) {
+                                                  if (_showPercent) {
+                                                    return Text(
+                                                      '${value.toInt()}%',
+                                                      style: const TextStyle(
+                                                        color: Colors.white54,
+                                                        fontSize: 11,
+                                                      ),
+                                                    );
+                                                  } else {
+                                                    return Text(
+                                                      '${value.toInt()} €',
+                                                      style: const TextStyle(
+                                                        color: Colors.white54,
+                                                        fontSize: 11,
+                                                      ),
+                                                    );
+                                                  }
+                                                },
+                                              ),
                                             ),
                                           ),
-                                        );
+                                          borderData: FlBorderData(show: false),
+                                          extraLinesData: ExtraLinesData(
+                                            verticalLines: [
+                                              if (_measureA != null)
+                                                VerticalLine(
+                                                  x: _measureA!.toDouble(),
+                                                  color: Colors.white54,
+                                                  strokeWidth: 1,
+                                                  dashArray: [4, 4],
+                                                ),
+                                              if (_measureB != null)
+                                                VerticalLine(
+                                                  x: _measureB!.toDouble(),
+                                                  color: Colors.white54,
+                                                  strokeWidth: 1,
+                                                  dashArray: [4, 4],
+                                                ),
+                                            ],
+                                          ),
+                                          lineTouchData: LineTouchData(
+                                            // Coupe le tooltip pendant la mesure
+                                            enabled: _pointers.length < 2,
+                                            touchTooltipData: LineTouchTooltipData(
+                                              getTooltipItems: (touchedSpots) {
+                                                String formattedDate = "";
+                                                if (touchedSpots.isNotEmpty) {
+                                                  int index = touchedSpots
+                                                      .first
+                                                      .x
+                                                      .toInt();
+                                                  if (index <
+                                                      _chartDates.length) {
+                                                    DateTime parsedDate =
+                                                        DateTime.parse(
+                                                          _chartDates[index],
+                                                        );
+                                                    formattedDate = DateFormat(
+                                                      'dd/MM/yyyy',
+                                                    ).format(parsedDate);
+                                                  }
+                                                }
 
-                                        return LineTooltipItem(
-                                          '',
-                                          const TextStyle(),
-                                          children: children,
-                                        );
-                                      }).toList();
-                                    },
-                                  ),
-                                ),
-                                lineBarsData: [
-                                  LineChartBarData(
-                                    spots: activeChartData,
-                                    isCurved: false,
-                                    color: _periodPerformanceAbs >= 0
-                                        ? Colors.greenAccent
-                                        : Colors.redAccent,
-                                    barWidth: 2,
-                                    isStrokeCapRound: true,
-                                    dotData: const FlDotData(show: false),
-                                    belowBarData: BarAreaData(
-                                      show: true,
-                                      color: (_periodPerformanceAbs >= 0
-                                              ? Colors.greenAccent
-                                              : Colors.redAccent)
-                                          .withOpacity(0.1),
+                                                return touchedSpots.map((spot) {
+                                                  bool isBenchmark =
+                                                      spot.barIndex == 1;
+                                                  bool isFirst =
+                                                      spot ==
+                                                      touchedSpots.first;
+
+                                                  String valStr = _showPercent
+                                                      ? "${spot.y > 0 ? '+' : ''}${spot.y.toStringAsFixed(2)} %"
+                                                      : "${spot.y.toStringAsFixed(2)} €";
+
+                                                  Color valueColor;
+                                                  if (isBenchmark) {
+                                                    valueColor =
+                                                        Colors.purpleAccent;
+                                                  } else {
+                                                    valueColor =
+                                                        _periodPerformanceAbs >=
+                                                            0
+                                                        ? Colors.greenAccent
+                                                        : Colors.redAccent;
+                                                  }
+
+                                                  List<TextSpan> children = [];
+
+                                                  if (isFirst) {
+                                                    children.add(
+                                                      TextSpan(
+                                                        text:
+                                                            "$formattedDate\n",
+                                                        style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
+
+                                                  children.add(
+                                                    TextSpan(
+                                                      text: valStr,
+                                                      style: TextStyle(
+                                                        color: valueColor,
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  );
+
+                                                  return LineTooltipItem(
+                                                    '',
+                                                    const TextStyle(),
+                                                    children: children,
+                                                  );
+                                                }).toList();
+                                              },
+                                            ),
+                                          ),
+                                          lineBarsData: [
+                                            LineChartBarData(
+                                              spots: activeChartData,
+                                              isCurved: false,
+                                              color: _periodPerformanceAbs >= 0
+                                                  ? Colors.greenAccent
+                                                  : Colors.redAccent,
+                                              barWidth: 2,
+                                              isStrokeCapRound: true,
+                                              dotData: const FlDotData(
+                                                show: false,
+                                              ),
+                                              belowBarData: BarAreaData(
+                                                show: true,
+                                                color:
+                                                    (_periodPerformanceAbs >= 0
+                                                            ? Colors.greenAccent
+                                                            : Colors.redAccent)
+                                                        .withOpacity(0.1),
+                                              ),
+                                            ),
+                                            if (_showPercent &&
+                                                _chartDataBenchmark.isNotEmpty)
+                                              LineChartBarData(
+                                                spots: _chartDataBenchmark,
+                                                isCurved: false,
+                                                color: Colors.purpleAccent,
+                                                barWidth: 2,
+                                                isStrokeCapRound: true,
+                                                dotData: const FlDotData(
+                                                  show: false,
+                                                ),
+                                                belowBarData: BarAreaData(
+                                                  show: false,
+                                                ),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                  if (_showPercent &&
-                                      _chartDataBenchmark.isNotEmpty)
-                                    LineChartBarData(
-                                      spots: _chartDataBenchmark,
-                                      isCurved: false,
-                                      color: Colors.purpleAccent,
-                                      barWidth: 2,
-                                      isStrokeCapRound: true,
-                                      dotData: const FlDotData(show: false),
-                                      belowBarData: BarAreaData(show: false),
-                                    ),
-                                ],
-                              ),
+                                    if (_measureA != null && _measureB != null)
+                                      Positioned(
+                                        top: 0,
+                                        left: _leftReserved,
+                                        right: 0,
+                                        child: IgnorePointer(
+                                          child: _buildMeasureBox(),
+                                        ),
+                                      ),
+                                  ],
+                                );
+                              },
                             ),
                     ),
                   ),
@@ -1247,8 +1471,11 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                         final isSelected = _selectedPeriod == period;
                         return GestureDetector(
                           onTap: () async {
-                            setState(() => _selectedPeriod = period);
-                            if (period == '1S' || period == '1D') {
+                            setState(() {
+                              _selectedPeriod = period;
+                              _clearMeasure();
+                            });
+                            if (period == '1W' || period == '1D') {
                               await _ensureIntradayLoaded();
                             }
                             _calculateChart();
@@ -1267,8 +1494,9 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                             child: Text(
                               period,
                               style: TextStyle(
-                                color:
-                                    isSelected ? Colors.white : Colors.white54,
+                                color: isSelected
+                                    ? Colors.white
+                                    : Colors.white54,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 13,
                               ),
