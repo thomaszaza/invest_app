@@ -18,8 +18,6 @@ export 'screens/forms_screens.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  Future<void> main() async {
-    WidgetsFlutterBinding.ensureInitialized();
 
     // Remplace ton ancien Supabase.initialize par celui-ci :
     await Supabase.initialize(
@@ -33,8 +31,7 @@ Future<void> main() async {
     await NotificationService.init();
 
     runApp(const MyApp());
-  }
-}
+}  
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
