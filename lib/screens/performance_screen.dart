@@ -46,6 +46,7 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
   List<JsonMap> _allTransactions = [];
   Map<String, DoubleMap> _yahooHistories = {};
   Map<String, DoubleMap> _yahooIntraday = {};
+  Map<String, DoubleMap> _manualHistories = {}; // NEW
   Map<String, String> _instrumentIsins = {};
   Map<String, JsonMap> _aferData = {};
   bool _isLoadingIntraday = false;
@@ -211,6 +212,25 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
         }
       }
       await Future.wait(yahooFutures);
+
+      // NEW : valeurs manuelles (fonds sans ISIN, etc.)
+      _manualHistories = {};
+      try {
+        final manualRows = await supabase
+            .from('manual_prices')
+            .select('instrument_id, date, price')
+            .order('date');
+        final idToName = <String, String>{
+          for (var inst in instrumentsData)
+            inst['id'].toString(): inst['name'] as String,
+        };
+        for (var r in manualRows) {
+          final n = idToName[r['instrument_id'].toString()];
+          if (n == null) continue;
+          (_manualHistories[n] ??= {})[r['date'].toString()] =
+              (r['price'] as num).toDouble();
+        }
+      } catch (e) {}
 
       for (var inst in instrumentsData) {
         String name = inst['name'];
@@ -481,6 +501,16 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
 
     Map<String, PriceEntryList> sortedHistories = {};
     histSource.forEach((name, hist) {
+      final entries =
+          hist.entries
+              .map((e) => MapEntry(DateTime.parse(e.key), e.value))
+              .toList()
+            ..sort((a, b) => a.key.compareTo(b.key));
+      sortedHistories[name] = entries;
+    });
+
+    // NEW : les valeurs manuelles priment (et restent valables en 1D / 1W)
+    _manualHistories.forEach((name, hist) {
       final entries =
           hist.entries
               .map((e) => MapEntry(DateTime.parse(e.key), e.value))
@@ -1455,8 +1485,38 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                                   : Colors.redAccent,
                                               barWidth: 2,
                                               isStrokeCapRound: true,
-                                              dotData: const FlDotData(
-                                                show: false,
+                                              dotData: FlDotData(
+                                                show:
+                                                    _measureA != null &&
+                                                    _measureB != null,
+                                                checkToShowDot:
+                                                    (spot, barData) {
+                                                      final index = spot.x
+                                                          .toInt();
+
+                                                      return index ==
+                                                              _measureA ||
+                                                          index == _measureB;
+                                                    },
+                                                getDotPainter:
+                                                    (
+                                                      spot,
+                                                      percent,
+                                                      barData,
+                                                      index,
+                                                    ) {
+                                                      return FlDotCirclePainter(
+                                                        radius: 5,
+                                                        color:
+                                                            _periodPerformanceAbs >=
+                                                                0
+                                                            ? Colors.greenAccent
+                                                            : Colors.redAccent,
+                                                        strokeWidth: 2,
+                                                        strokeColor:
+                                                            Colors.white,
+                                                      );
+                                                    },
                                               ),
                                               belowBarData: BarAreaData(
                                                 show: true,
@@ -1475,8 +1535,35 @@ class _PerformanceScreenState extends State<PerformanceScreen> {
                                                 color: Colors.purpleAccent,
                                                 barWidth: 2,
                                                 isStrokeCapRound: true,
-                                                dotData: const FlDotData(
-                                                  show: false,
+                                                dotData: FlDotData(
+                                                  show:
+                                                      _measureA != null &&
+                                                      _measureB != null,
+                                                  checkToShowDot:
+                                                      (spot, barData) {
+                                                        final index = spot.x
+                                                            .toInt();
+
+                                                        return index ==
+                                                                _measureA ||
+                                                            index == _measureB;
+                                                      },
+                                                  getDotPainter:
+                                                      (
+                                                        spot,
+                                                        percent,
+                                                        barData,
+                                                        index,
+                                                      ) {
+                                                        return FlDotCirclePainter(
+                                                          radius: 5,
+                                                          color: Colors
+                                                              .purpleAccent,
+                                                          strokeWidth: 2,
+                                                          strokeColor:
+                                                              Colors.white,
+                                                        );
+                                                      },
                                                 ),
                                                 belowBarData: BarAreaData(
                                                   show: false,

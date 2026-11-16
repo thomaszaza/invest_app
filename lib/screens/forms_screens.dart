@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -705,13 +706,11 @@ class _AddInstrumentScreenState extends State<AddInstrumentScreen> {
                       controller: _tickerController,
                       style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
-                        labelText: 'Ticker ou ISIN (ex: MC.PA)',
+                        labelText: 'Ticker ou ISIN (facultatif)',
                         labelStyle: TextStyle(color: Colors.white70),
                         floatingLabelStyle: TextStyle(color: Colors.white),
                         border: OutlineInputBorder(),
                       ),
-                      validator: (val) =>
-                          (val == null || val.isEmpty) ? 'Champ requis' : null,
                     ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<dynamic>(

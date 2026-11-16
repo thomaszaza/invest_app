@@ -48,6 +48,65 @@ class PriceCache {
 }
 
 class PriceService {
+    /// Historique manuel {date 'yyyy-MM-dd': prix}
+  static Future<Map<String, double>> fetchManualHistory(
+    dynamic instrumentId,
+  ) async {
+    final Map<String, double> out = {};
+    if (instrumentId == null) return out;
+    try {
+      final rows = await Supabase.instance.client
+          .from('manual_prices')
+          .select('date, price')
+          .eq('instrument_id', instrumentId)
+          .order('date');
+      for (final r in rows) {
+        out[r['date'].toString()] = (r['price'] as num).toDouble();
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// Valeur manuelle à une date (interpolation linéaire entre 2 points,
+  /// valeur constante avant le premier / après le dernier point).
+  static Future<double?> fetchManualPrice(
+    dynamic instrumentId, {
+    DateTime? at,
+  }) async {
+    final hist = await fetchManualHistory(instrumentId);
+    if (hist.isEmpty) return null;
+
+    final pts = hist.entries
+        .map((e) => MapEntry(DateTime.parse(e.key), e.value))
+        .toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+
+    final d = at ?? DateTime.now();
+    if (!d.isAfter(pts.first.key)) return pts.first.value;
+    if (!d.isBefore(pts.last.key)) return pts.last.value;
+
+    for (int i = 0; i < pts.length - 1; i++) {
+      final a = pts[i], b = pts[i + 1];
+      if (!d.isBefore(a.key) && d.isBefore(b.key)) {
+        final gap = b.key.difference(a.key).inMilliseconds;
+        if (gap <= 0) return a.value;
+        final progress = d.difference(a.key).inMilliseconds / gap;
+        return a.value + (b.value - a.value) * progress;
+      }
+    }
+    return pts.last.value;
+  }
+
+  /// Prix "live" : valeur manuelle prioritaire, sinon API.
+  static Future<double?> fetchLivePrice(
+    String name,
+    String isin,
+    dynamic id,
+  ) async {
+    final manual = await fetchManualPrice(id);
+    if (manual != null) return manual;
+    return _fetchLivePriceRaw(name, isin, id);
+  }
   static final supabase = Supabase.instance.client;
 
   static Future<JsonMap?> fetchYahooFundamentals(
@@ -128,7 +187,7 @@ class PriceService {
     return null;
   }
 
-  static Future<double?> fetchLivePrice(
+  static Future<double?> _fetchLivePriceRaw(
     String instrumentName,
     String isin,
     dynamic instrumentId,

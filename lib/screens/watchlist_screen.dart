@@ -13,7 +13,7 @@ class WatchlistScreen extends StatefulWidget {
 class _WatchlistScreenState extends State<WatchlistScreen> {
   final supabase = Supabase.instance.client;
   bool _isLoading = true;
-  List<Map<String, dynamic>> _watchlist = [];
+  List _watchlist = [];
 
   @override
   void initState() {
@@ -31,8 +31,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           .eq('is_watchlist', true)
           .order('watchlist_position', ascending: true, nullsFirst: false);
 
-      final List<Map<String, dynamic>> list =
-          List<Map<String, dynamic>>.from(data);
+      final List list = List.from(data);
 
       if (mounted) {
         setState(() {
@@ -175,9 +174,9 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         title: const Text(
           'Watchlist',
           style: TextStyle(
+            fontWeight: FontWeight.bold,
             color: Colors.white,
             fontSize: 24,
-            fontWeight: FontWeight.bold,
           ),
         ),
         backgroundColor: Colors.black,
@@ -206,132 +205,145 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                     style: TextStyle(color: Colors.white54),
                   ),
                 )
-              : ReorderableListView.builder(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  itemCount: _watchlist.length,
-                  onReorder: _onReorder,
-                  buildDefaultDragHandles: false,
-                  itemBuilder: (context, index) {
-                    final inst = _watchlist[index];
-                    final double? price = inst['currentPrice'];
+              : RefreshIndicator(
+                  onRefresh: _loadWatchlist,
+                  color: Colors.greenAccent,
+                  backgroundColor: const Color(0xFF1C1C1E),
+                  child: ReorderableListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    itemCount: _watchlist.length,
+                    onReorder: _onReorder,
+                    buildDefaultDragHandles: false,
+                    proxyDecorator: (child, index, animation) {
+                      return Material(
+                        color: Colors.transparent,
+                        child: child,
+                      );
+                    },
+                    itemBuilder: (context, index) {
+                      final inst = _watchlist[index];
+                      final double? price = inst['currentPrice'];
+                      final String isin = (inst['isin'] ?? '').toString();
+                      final String category =
+                          (inst['category'] ?? '').toString();
 
-                    return Card(
-                      key: ValueKey(inst['id']),
-                      color: const Color(0xFF1C1C1E),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      margin: const EdgeInsets.only(bottom: 10),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () async {
-                          await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) =>
-                                  InstrumentDetailScreen(instrument: inst),
-                            ),
-                          );
-                          _loadWatchlist();
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.all(14.0),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      inst['name'],
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                      ),
-                                    ),
-                                    if ((inst['isin'] ?? '')
-                                        .toString()
-                                        .isNotEmpty)
-                                      Text(
-                                        inst['isin'],
-                                        style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 13,
-                                        ),
-                                      ),
-                                    if ((inst['category'] ?? '')
-                                        .toString()
-                                        .isNotEmpty)
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 4),
-                                        child: Text(
-                                          inst['category'],
+                      return ReorderableDelayedDragStartListener(
+                        key: ValueKey(inst['id']),
+                        index: index,
+                        child: Card(
+                          color: const Color(0xFF1C1C1E),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          margin: const EdgeInsets.only(bottom: 6),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () async {
+                              await Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => InstrumentDetailScreen(
+                                      instrument: inst),
+                                ),
+                              );
+                              _loadWatchlist();
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.all(10.0),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          inst['name'] ?? '',
                                           style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 12,
                                             fontWeight: FontWeight.bold,
+                                            color: Colors.white,
+                                            fontSize: 16,
                                           ),
                                         ),
+                                        if (isin.isNotEmpty) ...[
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            isin,
+                                            style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ],
+                                        if (category.isNotEmpty) ...[
+                                          const SizedBox(height: 3),
+                                          Text(
+                                            category,
+                                            style: const TextStyle(
+                                              color: Colors.white54,
+                                              fontSize: 13,
+                                              
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        price != null
+                                            ? "${price.toStringAsFixed(2)} €"
+                                            : "-- €",
+                                        style: TextStyle(
+                                          color: price != null
+                                              ? Colors.greenAccent
+                                              : Colors.white54,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 16,
+                                        ),
                                       ),
-                                  ],
-                                ),
-                              ),
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    price != null
-                                        ? "${price.toStringAsFixed(2)} €"
-                                        : "-",
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 16,
-                                    ),
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(
-                                      Icons.edit,
-                                      color: Colors.white38,
-                                      size: 20,
-                                    ),
-                                    onPressed: () =>
-                                        _showManualPriceDialog(inst),
-                                  ),
-                                  IconButton(
-                                    padding: EdgeInsets.zero,
-                                    constraints: const BoxConstraints(),
-                                    icon: const Icon(
-                                      Icons.notifications_none,
-                                      color: Colors.white38,
-                                      size: 20,
-                                    ),
-                                    onPressed: () =>
-                                        showCreateAlertDialog(context, inst),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  ReorderableDragStartListener(
-                                    index: index,
-                                    child: const Padding(
-                                      padding: EdgeInsets.all(6),
-                                      child: Icon(
-                                        Icons.drag_handle,
-                                        color: Colors.white38,
-                                        size: 22,
+                                      const SizedBox(width: 10),
+                                      IconButton(
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        icon: const Icon(
+                                          Icons.edit,
+                                          color: Colors.white38,
+                                          size: 19,
+                                        ),
+                                        onPressed: () =>
+                                            _showManualPriceDialog(inst),
                                       ),
-                                    ),
+                                      const SizedBox(width: 10),
+                                      IconButton(
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                        icon: const Icon(
+                                          Icons.notifications_none,
+                                          color: Colors.white38,
+                                          size: 20,
+                                        ),
+                                        onPressed: () =>
+                                            showCreateAlertDialog(context, inst),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
-                            ],
+                            ),
                           ),
                         ),
-                      ),
-                    );
-                  },
+                      );
+                    },
+                  ),
                 ),
     );
   }

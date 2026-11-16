@@ -200,7 +200,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         );
       }
 
-      if (_fullHistory.isEmpty) {
+      final manual = await PriceService.fetchManualHistory(id);
+      if (manual.isNotEmpty) {
+        _fullHistory = manual;
+      } else if (_fullHistory.isEmpty) {
         final supabase = Supabase.instance.client;
         final rows = await supabase
             .from('daily_prices')
@@ -625,6 +628,202 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     );
   }
 
+  Future<void> _showManualPricesDialog() async {
+    final supabase = Supabase.instance.client;
+    final id = widget.instrument['id'];
+    List<JsonMap> rows = [];
+    bool changed = false;
+
+    Future<void> reload() async {
+      final data = await supabase
+          .from('manual_prices')
+          .select('id, date, price')
+          .eq('instrument_id', id)
+          .order('date', ascending: false);
+      rows = List<JsonMap>.from(data);
+    }
+
+    try {
+      await reload();
+    } catch (e) {}
+
+    DateTime selectedDate = DateTime.now();
+    final priceController = TextEditingController();
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          backgroundColor: const Color(0xFF1C1C1E),
+          title: const Text(
+            "Valeurs manuelles",
+            style: TextStyle(color: Colors.white),
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "Entre deux dates, l'évolution est considérée linéaire.",
+                    style: TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white30),
+                          ),
+                          icon: const Icon(Icons.calendar_today, size: 16),
+                          label: Text(
+                            DateFormat('dd/MM/yyyy').format(selectedDate),
+                          ),
+                          onPressed: () async {
+                            final picked = await showDatePicker(
+                              context: ctx,
+                              initialDate: selectedDate,
+                              firstDate: DateTime(2000),
+                              lastDate: DateTime.now().add(
+                                const Duration(days: 365),
+                              ),
+                            );
+                            if (picked != null) {
+                              setD(() => selectedDate = picked);
+                            }
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TextField(
+                          controller: priceController,
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
+                          style: const TextStyle(color: Colors.white),
+                          decoration: const InputDecoration(
+                            labelText: 'Valeur (€)',
+                            labelStyle: TextStyle(color: Colors.white54),
+                            enabledBorder: UnderlineInputBorder(
+                              borderSide: BorderSide(color: Colors.white),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () async {
+                        final v = double.tryParse(
+                          priceController.text.trim().replaceAll(',', '.'),
+                        );
+                        if (v == null || v <= 0) {
+                          ScaffoldMessenger.of(ctx).showSnackBar(
+                            const SnackBar(
+                              content: Text("Valeur invalide"),
+                              backgroundColor: Colors.red,
+                            ),
+                          );
+                          return;
+                        }
+                        try {
+                          await supabase.from('manual_prices').upsert({
+                            'instrument_id': id,
+                            'date': DateFormat('yyyy-MM-dd')
+                                .format(selectedDate),
+                            'price': v,
+                          }, onConflict: 'instrument_id,date');
+                          await reload();
+                          changed = true;
+                          priceController.clear();
+                          setD(() {});
+                        } catch (e) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              SnackBar(
+                                content: Text("Erreur : $e"),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        }
+                      },
+                      child: const Text(
+                        "Ajouter / remplacer",
+                        style: TextStyle(
+                          color: Colors.greenAccent,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Divider(color: Colors.white24),
+                  if (rows.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        "Aucune valeur saisie.",
+                        style: TextStyle(color: Colors.white54),
+                      ),
+                    ),
+                  ...rows.map((r) {
+                    final d = DateTime.parse(r['date'].toString());
+                    return ListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        "${DateFormat('dd/MM/yyyy').format(d)}  —  ${(r['price'] as num).toDouble().toStringAsFixed(2)} €",
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(
+                          Icons.delete_outline,
+                          color: Colors.redAccent,
+                          size: 20,
+                        ),
+                        onPressed: () async {
+                          try {
+                            await supabase
+                                .from('manual_prices')
+                                .delete()
+                                .eq('id', r['id']);
+                            await reload();
+                            changed = true;
+                            setD(() {});
+                          } catch (e) {}
+                        },
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text(
+                "Fermer",
+                style: TextStyle(color: Colors.blueAccent),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    priceController.dispose();
+    if (changed && mounted) _loadHistory(isInitial: true);
+  }
+
   Future<JsonMap?> _fetchDividendData() async {
     try {
       String ticker =
@@ -690,6 +889,11 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.add_chart, color: Colors.white),
+            tooltip: 'Valeurs manuelles',
+            onPressed: _showManualPricesDialog,
+          ),
           IconButton(
             icon: const Icon(Icons.edit_note, color: Colors.white),
             onPressed: _showEditInstrumentDialog,
@@ -1109,8 +1313,34 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                                               color: perfColor,
                                               barWidth: 2,
                                               isStrokeCapRound: true,
-                                              dotData: const FlDotData(
-                                                show: false,
+                                              dotData: FlDotData(
+                                                show:
+                                                    _measureA != null &&
+                                                    _measureB != null,
+                                                checkToShowDot:
+                                                    (spot, barData) {
+                                                      final index = spot.x
+                                                          .toInt();
+
+                                                      return index ==
+                                                              _measureA ||
+                                                          index == _measureB;
+                                                    },
+                                                getDotPainter:
+                                                    (
+                                                      spot,
+                                                      percent,
+                                                      barData,
+                                                      index,
+                                                    ) {
+                                                      return FlDotCirclePainter(
+                                                        radius: 5,
+                                                        color: perfColor,
+                                                        strokeWidth: 2,
+                                                        strokeColor:
+                                                            Colors.white,
+                                                      );
+                                                    },
                                               ),
                                               belowBarData: BarAreaData(
                                                 show: true,
