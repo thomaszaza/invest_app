@@ -95,7 +95,8 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         for (int i = 0; i < _watchlist.length; i++)
           supabase
               .from('instruments')
-              .update({'watchlist_position': i}).eq('id', _watchlist[i]['id']),
+              .update({'watchlist_position': i})
+              .eq('id', _watchlist[i]['id']),
       ]);
     } catch (e) {
       if (mounted) {
@@ -114,8 +115,8 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     try {
       await supabase
           .from('instruments')
-          .update({'is_watchlist': false, 'watchlist_position': null}).eq(
-              'id', inst['id']);
+          .update({'is_watchlist': false, 'watchlist_position': null})
+          .eq('id', inst['id']);
       if (mounted) {
         setState(() => _watchlist.removeWhere((i) => i['id'] == inst['id']));
       }
@@ -132,6 +133,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
   }
 
   Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
+    if ((inst['ticker_isin'] ?? '').toString().trim().isNotEmpty) return;
     final TextEditingController priceController = TextEditingController();
 
     showDialog(
@@ -223,13 +225,17 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
         itemBuilder: (context, index) {
           final inst = _watchlist[index];
           final double? price = inst['currentPrice'];
-          final String isin = (inst['isin'] ?? '').toString();
+          final String isin = (inst['ticker_isin'] ?? '').toString().trim();
+          final bool canEditManualPrice = isin.isEmpty;
           final String category = (inst['category'] ?? '').toString();
 
           final double? ref = _refPrices[inst['id'].toString()];
           final double? perfPct = (price != null && ref != null && ref > 0)
               ? (price - ref) / ref * 100
               : null;
+          final Color perfColor = perfPct == null
+              ? Colors.white54
+              : (perfPct >= 0 ? Colors.greenAccent : Colors.redAccent);
 
           return ReorderableDelayedDragStartListener(
             key: ValueKey(inst['id']),
@@ -291,17 +297,23 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                                 ),
                                 if (isin.isNotEmpty) ...[
                                   const SizedBox(height: 4),
-                                  Text(isin,
-                                      style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 13)),
+                                  Text(
+                                    isin,
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 13,
+                                    ),
+                                  ),
                                 ],
                                 if (category.isNotEmpty) ...[
                                   const SizedBox(height: 3),
-                                  Text(category,
-                                      style: const TextStyle(
-                                          color: Colors.white54,
-                                          fontSize: 13)),
+                                  Text(
+                                    category,
+                                    style: const TextStyle(
+                                      color: Colors.white54,
+                                      fontSize: 13,
+                                    ),
+                                  ),
                                 ],
                               ],
                             ),
@@ -322,10 +334,13 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              PerfBadge(
-                                label: _perfRange,
-                                pct: perfPct,
-                                filled: true,
+                              Text(
+                                "$_perfRange : ${perfPct != null ? '${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)}%' : '-- %'}",
+                                style: TextStyle(
+                                  color: perfColor,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ],
                           ),
@@ -333,19 +348,27 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                           Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
+                              if (canEditManualPrice) ...[
+                                IconButton(
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  icon: const Icon(
+                                    Icons.edit,
+                                    color: Colors.white38,
+                                    size: 19,
+                                  ),
+                                  onPressed: () => _showManualPriceDialog(inst),
+                                ),
+                                const SizedBox(width: 10),
+                              ],
                               IconButton(
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(),
-                                icon: const Icon(Icons.edit,
-                                    color: Colors.white38, size: 19),
-                                onPressed: () => _showManualPriceDialog(inst),
-                              ),
-                              const SizedBox(width: 10),
-                              IconButton(
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                icon: const Icon(Icons.notifications_none,
-                                    color: Colors.white38, size: 20),
+                                icon: const Icon(
+                                  Icons.notifications_none,
+                                  color: Colors.white38,
+                                  size: 20,
+                                ),
                                 onPressed: () =>
                                     showCreateAlertDialog(context, inst),
                               ),
@@ -413,15 +436,16 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           Expanded(
             child: _isLoading
                 ? const Center(
-                    child: CircularProgressIndicator(color: Colors.white))
+                    child: CircularProgressIndicator(color: Colors.white),
+                  )
                 : _watchlist.isEmpty
-                    ? const Center(
-                        child: Text(
-                          "Aucune valeur suivie pour l'instant",
-                          style: TextStyle(color: Colors.white54),
-                        ),
-                      )
-                    : _buildList(),
+                ? const Center(
+                    child: Text(
+                      "Aucune valeur suivie pour l'instant",
+                      style: TextStyle(color: Colors.white54),
+                    ),
+                  )
+                : _buildList(),
           ),
         ],
       ),

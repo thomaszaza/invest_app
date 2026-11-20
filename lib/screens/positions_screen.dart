@@ -389,28 +389,14 @@ class _PositionsScreenState extends State<PositionsScreen> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
-                                    style: TextStyle(
-                                      color: globalColor,
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  pruMode ? "vs PRU" : "sur $_perfRange",
-                                  style: const TextStyle(
-                                    color: Colors.white38,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ],
+                            Text(
+                              "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
+                              style: TextStyle(
+                                color: globalColor,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ],
                         ),
@@ -586,16 +572,18 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                         ),
                                       ),
                                       const SizedBox(height: 6),
-                                      // PRU = badge contour / plage = badge rempli
-                                      PerfBadge(
-                                        label: pruMode ? 'PRU' : _perfRange,
-                                        pct: perfPct,
-                                        filled: !pruMode,
+                                      Text(
+                                        "${pruMode ? '' : '$_perfRange : '}${perfPct != null ? '${perfPct >= 0 ? '+' : ''}${perfPct.toStringAsFixed(2)}%' : '-- %'}",
+                                        style: TextStyle(
+                                          color: valueColor,
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.bold,
+                                        ),
                                       ),
                                       if (perfAbs != null) ...[
                                         const SizedBox(height: 2),
                                         Text(
-                                          "${pruMode ? 'PV' : 'Δ'} : ${perfAbs >= 0 ? '+' : ''}${perfAbs.toStringAsFixed(2)} €",
+                                          "PV : ${perfAbs >= 0 ? '+' : ''}${perfAbs.toStringAsFixed(2)} €",
                                           style: TextStyle(
                                             color: valueColor,
                                             fontSize: 13,

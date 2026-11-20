@@ -40,6 +40,9 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   late Future<JsonMap?> _dividendFuture;
   late Future<JsonMap?> _fundamentalsFuture;
 
+  bool get _canEditManualPrice =>
+      (widget.instrument['ticker_isin'] ?? '').toString().trim().isEmpty;
+
   @override
   void initState() {
     super.initState();
@@ -139,7 +142,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     return value.toStringAsFixed(0);
   }
 
-  Future<Map<String, dynamic>?> _fetchFundamentalsData() async {
+  Future<JsonMap?> _fetchFundamentalsData() async {
     final String isin =
         widget.instrument['ticker_isin'] ?? widget.instrument['isin'] ?? '';
     if (isin.isEmpty) return null;
@@ -224,8 +227,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
             .eq('instrument_id', id)
             .order('date');
         for (var row in rows) {
-          _fullHistory[row['date'].toString()] = (row['price'] as num)
-              .toDouble();
+          _fullHistory[row['date'].toString()] =
+              (row['price'] as num).toDouble();
         }
       }
     } catch (e) {}
@@ -255,8 +258,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     dynamic id = widget.instrument['id'];
 
     if (widget.instrument['pru'] != null &&
-        (widget.instrument['pru'] as double) > 0.001) {
-      _pruLine = widget.instrument['pru'];
+        (widget.instrument['pru'] as num).toDouble() > 0.001) {
+      _pruLine = (widget.instrument['pru'] as num).toDouble();
     } else if (id != null) {
       try {
         final txData = await supabase
@@ -437,9 +440,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     final datePrefix =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} - ';
 
-    String existingComment = (instrumentData['comment'] ?? '')
-        .toString()
-        .trim();
+    String existingComment =
+        (instrumentData['comment'] ?? '').toString().trim();
 
     final String initialCommentText = existingComment.isEmpty
         ? datePrefix
@@ -600,8 +602,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
 
                   setState(() {
                     widget.instrument['name'] = nameController.text.trim();
-                    widget.instrument['ticker_isin'] = isinController.text
-                        .trim();
+                    widget.instrument['ticker_isin'] =
+                        isinController.text.trim();
                     widget.instrument['account_id'] = selectedAccountId;
                     widget.instrument['category'] = selectedCategory;
                     widget.instrument['comment'] = finalComment;
@@ -642,6 +644,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   }
 
   Future<void> _showManualPricesDialog() async {
+    if (!_canEditManualPrice) return;
     final supabase = Supabase.instance.client;
     final id = widget.instrument['id'];
     List<JsonMap> rows = [];
@@ -750,8 +753,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                         try {
                           await supabase.from('manual_prices').upsert({
                             'instrument_id': id,
-                            'date': DateFormat('yyyy-MM-dd')
-                                .format(selectedDate),
+                            'date':
+                                DateFormat('yyyy-MM-dd').format(selectedDate),
                             'price': v,
                           }, onConflict: 'instrument_id,date');
                           await reload();
@@ -867,7 +870,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
               })
               .eq('id', widget.instrument['id']);
         } catch (e) {
-          print("Erreur de sauvegarde en base : $e");
+          debugPrint("Erreur de sauvegarde en base : $e");
         }
 
         return {'amount': amount, 'date': displayDate};
@@ -875,7 +878,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
 
       return null;
     } catch (e) {
-      print("Erreur lors de l'appel à fetch_dividend : $e");
+      debugPrint("Erreur lors de l'appel à fetch_dividend : $e");
       return null;
     }
   }
@@ -905,11 +908,12 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
         backgroundColor: Colors.black,
         foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add_chart, color: Colors.white),
-            tooltip: 'Valeurs manuelles',
-            onPressed: _showManualPricesDialog,
-          ),
+          if (_canEditManualPrice)
+            IconButton(
+              icon: const Icon(Icons.add_chart, color: Colors.white),
+              tooltip: 'Valeurs manuelles',
+              onPressed: _showManualPricesDialog,
+            ),
           IconButton(
             icon: const Icon(Icons.edit_note, color: Colors.white),
             onPressed: _showEditInstrumentDialog,
@@ -1081,241 +1085,253 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                               ),
                             )
                           : _spots.isEmpty
-                          ? const Center(
-                              child: Text(
-                                "Pas de données disponibles",
-                                style: TextStyle(color: Colors.white54),
-                              ),
-                            )
-                          : LayoutBuilder(
-                              builder: (context, constraints) {
-                                final w = constraints.maxWidth;
+                              ? const Center(
+                                  child: Text(
+                                    "Pas de données disponibles",
+                                    style: TextStyle(color: Colors.white54),
+                                  ),
+                                )
+                              : LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final w = constraints.maxWidth;
 
-                                void onPointer(
-                                  PointerEvent e, {
-                                  bool remove = false,
-                                }) {
-                                  final before = _pointers.length;
-                                  if (remove) {
-                                    _pointers.remove(e.pointer);
-                                  } else {
-                                    _pointers[e.pointer] = e.localPosition;
-                                  }
-                                  // [NEW] verrouille le swipe entre fiches
-                                  // tant qu'un doigt est sur le graphique
-                                  PagerLock.locked.value = _pointers.isNotEmpty;
+                                    void onPointer(
+                                      PointerEvent e, {
+                                      bool remove = false,
+                                    }) {
+                                      final before = _pointers.length;
+                                      if (remove) {
+                                        _pointers.remove(e.pointer);
+                                      } else {
+                                        _pointers[e.pointer] = e.localPosition;
+                                      }
+                                      // [NEW] verrouille le swipe entre fiches
+                                      // tant qu'un doigt est sur le graphique
+                                      PagerLock.locked.value =
+                                          _pointers.isNotEmpty;
 
-                                  // Un seul doigt : on laisse fl_chart gérer
-                                  // le tooltip, pas besoin de reconstruire.
-                                  if (_pointers.length < 2 && before < 2) {
-                                    return;
-                                  }
-                                  setState(() => _recomputeMeasure(w));
-                                }
+                                      // Un seul doigt : on laisse fl_chart gérer
+                                      // le tooltip, pas besoin de reconstruire.
+                                      if (_pointers.length < 2 && before < 2) {
+                                        return;
+                                      }
+                                      setState(() => _recomputeMeasure(w));
+                                    }
 
-                                return Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    Listener(
-                                      onPointerDown: onPointer,
-                                      onPointerMove: onPointer,
-                                      onPointerUp: (e) =>
-                                          onPointer(e, remove: true),
-                                      onPointerCancel: (e) =>
-                                          onPointer(e, remove: true),
-                                      child: LineChart(
-                                        LineChartData(
-                                          gridData: FlGridData(
-                                            show: true,
-                                            drawVerticalLine: false,
-                                            getDrawingHorizontalLine: (v) =>
-                                                FlLine(
+                                    return Stack(
+                                      fit: StackFit.expand,
+                                      children: [
+                                        Listener(
+                                          onPointerDown: onPointer,
+                                          onPointerMove: onPointer,
+                                          onPointerUp: (e) =>
+                                              onPointer(e, remove: true),
+                                          onPointerCancel: (e) =>
+                                              onPointer(e, remove: true),
+                                          child: LineChart(
+                                            LineChartData(
+                                              gridData: FlGridData(
+                                                show: true,
+                                                drawVerticalLine: false,
+                                                getDrawingHorizontalLine: (v) =>
+                                                    FlLine(
                                                   color: Colors.white10,
                                                   strokeWidth: 1,
                                                 ),
-                                          ),
-                                          titlesData: FlTitlesData(
-                                            show: true,
-                                            rightTitles: const AxisTitles(
-                                              sideTitles: SideTitles(
-                                                showTitles: false,
                                               ),
-                                            ),
-                                            topTitles: const AxisTitles(
-                                              sideTitles: SideTitles(
-                                                showTitles: false,
-                                              ),
-                                            ),
-                                            bottomTitles: AxisTitles(
-                                              sideTitles: SideTitles(
-                                                showTitles: true,
-                                                reservedSize: 40,
-                                                interval:
-                                                    (_spots.length / 5)
-                                                            .ceilToDouble() ==
-                                                        0
-                                                    ? 1
-                                                    : (_spots.length / 5)
-                                                          .ceilToDouble(),
-                                                getTitlesWidget: (value, meta) {
-                                                  int index = value.toInt();
-                                                  if (index >= 0 &&
-                                                      index < _dates.length) {
-                                                    DateTime d = DateTime.parse(
-                                                      _dates[index],
-                                                    );
-                                                    String day = d.day
-                                                        .toString()
-                                                        .padLeft(2, '0');
-                                                    String month = d.month
-                                                        .toString()
-                                                        .padLeft(2, '0');
+                                              titlesData: FlTitlesData(
+                                                show: true,
+                                                rightTitles: const AxisTitles(
+                                                  sideTitles: SideTitles(
+                                                    showTitles: false,
+                                                  ),
+                                                ),
+                                                topTitles: const AxisTitles(
+                                                  sideTitles: SideTitles(
+                                                    showTitles: false,
+                                                  ),
+                                                ),
+                                                bottomTitles: AxisTitles(
+                                                  sideTitles: SideTitles(
+                                                    showTitles: true,
+                                                    reservedSize: 40,
+                                                    interval: (_spots.length / 5)
+                                                                .ceilToDouble() ==
+                                                            0
+                                                        ? 1
+                                                        : (_spots.length / 5)
+                                                            .ceilToDouble(),
+                                                    getTitlesWidget:
+                                                        (value, meta) {
+                                                      int index = value.toInt();
+                                                      if (index >= 0 &&
+                                                          index <
+                                                              _dates.length) {
+                                                        DateTime d =
+                                                            DateTime.parse(
+                                                          _dates[index],
+                                                        );
+                                                        String day = d.day
+                                                            .toString()
+                                                            .padLeft(2, '0');
+                                                        String month = d.month
+                                                            .toString()
+                                                            .padLeft(2, '0');
 
-                                                    String text;
-                                                    if (_selectedPeriod ==
-                                                        '1D') {
-                                                      String hour = d.hour
-                                                          .toString()
-                                                          .padLeft(2, '0');
-                                                      String min = d.minute
-                                                          .toString()
-                                                          .padLeft(2, '0');
-                                                      text = '$hour:$min';
-                                                    } else if (_selectedPeriod ==
-                                                        '1W') {
-                                                      String hour = d.hour
-                                                          .toString()
-                                                          .padLeft(2, '0');
-                                                      String min = d.minute
-                                                          .toString()
-                                                          .padLeft(2, '0');
-                                                      text =
-                                                          '$day/$month\n$hour:$min';
-                                                    } else if (_selectedPeriod ==
-                                                            'ALL' ||
-                                                        _selectedPeriod ==
-                                                            '1A' ||
-                                                        _selectedPeriod ==
-                                                            'YTD') {
-                                                      text =
-                                                          '$month/${d.year.toString().substring(2)}';
-                                                    } else {
-                                                      text = '$day/$month';
-                                                    }
+                                                        String text;
+                                                        if (_selectedPeriod ==
+                                                            '1D') {
+                                                          String hour = d.hour
+                                                              .toString()
+                                                              .padLeft(2, '0');
+                                                          String min = d.minute
+                                                              .toString()
+                                                              .padLeft(2, '0');
+                                                          text = '$hour:$min';
+                                                        } else if (_selectedPeriod ==
+                                                            '1W') {
+                                                          String hour = d.hour
+                                                              .toString()
+                                                              .padLeft(2, '0');
+                                                          String min = d.minute
+                                                              .toString()
+                                                              .padLeft(2, '0');
+                                                          text =
+                                                              '$day/$month\n$hour:$min';
+                                                        } else if (_selectedPeriod ==
+                                                                'ALL' ||
+                                                            _selectedPeriod ==
+                                                                '1A' ||
+                                                            _selectedPeriod ==
+                                                                'YTD') {
+                                                          text =
+                                                              '$month/${d.year.toString().substring(2)}';
+                                                        } else {
+                                                          text = '$day/$month';
+                                                        }
 
-                                                    return Padding(
-                                                      padding:
-                                                          const EdgeInsets.only(
+                                                        return Padding(
+                                                          padding:
+                                                              const EdgeInsets
+                                                                  .only(
                                                             top: 8.0,
                                                           ),
-                                                      child: Text(
-                                                        text,
-                                                        textAlign:
-                                                            TextAlign.center,
-                                                        style: const TextStyle(
-                                                          color: Colors.white54,
-                                                          fontSize: 10,
-                                                        ),
-                                                      ),
-                                                    );
-                                                  }
-                                                  return const Text('');
-                                                },
-                                              ),
-                                            ),
-                                            leftTitles: AxisTitles(
-                                              sideTitles: SideTitles(
-                                                showTitles: true,
-                                                reservedSize: _leftReserved,
-                                                getTitlesWidget:
-                                                    (value, meta) => Text(
+                                                          child: Text(
+                                                            text,
+                                                            textAlign: TextAlign
+                                                                .center,
+                                                            style:
+                                                                const TextStyle(
+                                                              color: Colors
+                                                                  .white54,
+                                                              fontSize: 10,
+                                                            ),
+                                                          ),
+                                                        );
+                                                      }
+                                                      return const Text('');
+                                                    },
+                                                  ),
+                                                ),
+                                                leftTitles: AxisTitles(
+                                                  sideTitles: SideTitles(
+                                                    showTitles: true,
+                                                    reservedSize: _leftReserved,
+                                                    getTitlesWidget:
+                                                        (value, meta) => Text(
                                                       '${value.toStringAsFixed(0)} €',
                                                       style: const TextStyle(
                                                         color: Colors.white54,
                                                         fontSize: 11,
                                                       ),
                                                     ),
+                                                  ),
+                                                ),
                                               ),
-                                            ),
-                                          ),
-                                          borderData: FlBorderData(show: false),
-                                          extraLinesData: ExtraLinesData(
-                                            horizontalLines: [
-                                              if (_pruLine != null)
-                                                HorizontalLine(
-                                                  y: _pruLine!,
-                                                  color: Colors.white70,
-                                                  strokeWidth: 1.5,
-                                                  dashArray: [6, 4],
-                                                  label: HorizontalLineLabel(
-                                                    show: true,
-                                                    alignment:
-                                                        Alignment.topRight,
-                                                    style: const TextStyle(
+                                              borderData:
+                                                  FlBorderData(show: false),
+                                              extraLinesData: ExtraLinesData(
+                                                horizontalLines: [
+                                                  if (_pruLine != null)
+                                                    HorizontalLine(
+                                                      y: _pruLine!,
                                                       color: Colors.white70,
-                                                      fontSize: 10,
-                                                      fontWeight:
-                                                          FontWeight.bold,
+                                                      strokeWidth: 1.5,
+                                                      dashArray: [6, 4],
+                                                      label:
+                                                          HorizontalLineLabel(
+                                                        show: true,
+                                                        alignment:
+                                                            Alignment.topRight,
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 10,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                        ),
+                                                        labelResolver: (line) =>
+                                                            "PRU ${_pruLine!.toStringAsFixed(2)} €",
+                                                      ),
                                                     ),
-                                                    labelResolver: (line) =>
-                                                        "PRU ${_pruLine!.toStringAsFixed(2)} €",
-                                                  ),
-                                                ),
-                                              for (final t
-                                                  in _alertThresholdLines)
-                                                HorizontalLine(
-                                                  y: t,
-                                                  color: Colors.white70,
-                                                  strokeWidth: 1,
-                                                  label: HorizontalLineLabel(
-                                                    show: true,
-                                                    alignment:
-                                                        Alignment.bottomRight,
-                                                    style: const TextStyle(
+                                                  for (final t
+                                                      in _alertThresholdLines)
+                                                    HorizontalLine(
+                                                      y: t,
                                                       color: Colors.white70,
-                                                      fontSize: 10,
-                                                      fontWeight:
-                                                          FontWeight.bold,
+                                                      strokeWidth: 1,
+                                                      label:
+                                                          HorizontalLineLabel(
+                                                        show: true,
+                                                        alignment: Alignment
+                                                            .bottomRight,
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 10,
+                                                          fontWeight:
+                                                              FontWeight.bold,
+                                                        ),
+                                                        labelResolver: (line) =>
+                                                            "Alerte ${t.toStringAsFixed(2)} €",
+                                                      ),
                                                     ),
-                                                    labelResolver: (line) =>
-                                                        "Alerte ${t.toStringAsFixed(2)} €",
-                                                  ),
-                                                ),
-                                            ],
-                                            verticalLines: [
-                                              if (_measureA != null)
-                                                VerticalLine(
-                                                  x: _measureA!.toDouble(),
-                                                  color: Colors.white54,
-                                                  strokeWidth: 1,
-                                                  dashArray: [4, 4],
-                                                ),
-                                              if (_measureB != null)
-                                                VerticalLine(
-                                                  x: _measureB!.toDouble(),
-                                                  color: Colors.white54,
-                                                  strokeWidth: 1,
-                                                  dashArray: [4, 4],
-                                                ),
-                                            ],
-                                          ),
-                                          lineTouchData: LineTouchData(
-                                            // Coupe le tooltip pendant la mesure
-                                            enabled: _pointers.length < 2,
-                                            touchTooltipData: LineTouchTooltipData(
-                                              getTooltipItems: (touchedSpots) =>
-                                                  touchedSpots.map((spot) {
+                                                ],
+                                                verticalLines: [
+                                                  if (_measureA != null)
+                                                    VerticalLine(
+                                                      x: _measureA!.toDouble(),
+                                                      color: Colors.white54,
+                                                      strokeWidth: 1,
+                                                      dashArray: [4, 4],
+                                                    ),
+                                                  if (_measureB != null)
+                                                    VerticalLine(
+                                                      x: _measureB!.toDouble(),
+                                                      color: Colors.white54,
+                                                      strokeWidth: 1,
+                                                      dashArray: [4, 4],
+                                                    ),
+                                                ],
+                                              ),
+                                              lineTouchData: LineTouchData(
+                                                // Coupe le tooltip pendant la mesure
+                                                enabled: _pointers.length < 2,
+                                                touchTooltipData:
+                                                    LineTouchTooltipData(
+                                                  getTooltipItems:
+                                                      (touchedSpots) =>
+                                                          touchedSpots
+                                                              .map((spot) {
                                                     int index = spot.x.toInt();
                                                     String formattedDate = "";
                                                     if (index < _dates.length) {
                                                       DateTime parsedDate =
                                                           DateTime.parse(
-                                                            _dates[index],
-                                                          );
+                                                        _dates[index],
+                                                      );
                                                       formattedDate =
                                                           DateFormat(
-                                                            'dd/MM/yyyy',
-                                                          ).format(parsedDate);
+                                                        'dd/MM/yyyy',
+                                                      ).format(parsedDate);
                                                     }
                                                     return LineTooltipItem(
                                                       "$formattedDate\n${spot.y.toStringAsFixed(2)} €",
@@ -1324,30 +1340,28 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                                                       ),
                                                     );
                                                   }).toList(),
-                                            ),
-                                          ),
-                                          lineBarsData: [
-                                            LineChartBarData(
-                                              spots: _spots,
-                                              isCurved: false,
-                                              color: perfColor,
-                                              barWidth: 2,
-                                              isStrokeCapRound: true,
-                                              dotData: FlDotData(
-                                                show:
-                                                    _measureA != null &&
-                                                    _measureB != null,
-                                                checkToShowDot:
-                                                    (spot, barData) {
-                                                      final index = spot.x
-                                                          .toInt();
+                                                ),
+                                              ),
+                                              lineBarsData: [
+                                                LineChartBarData(
+                                                  spots: _spots,
+                                                  isCurved: false,
+                                                  color: perfColor,
+                                                  barWidth: 2,
+                                                  isStrokeCapRound: true,
+                                                  dotData: FlDotData(
+                                                    show: _measureA != null &&
+                                                        _measureB != null,
+                                                    checkToShowDot:
+                                                        (spot, barData) {
+                                                      final index =
+                                                          spot.x.toInt();
 
                                                       return index ==
                                                               _measureA ||
                                                           index == _measureB;
                                                     },
-                                                getDotPainter:
-                                                    (
+                                                    getDotPainter: (
                                                       spot,
                                                       percent,
                                                       barData,
@@ -1361,31 +1375,31 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                                                             Colors.white,
                                                       );
                                                     },
-                                              ),
-                                              belowBarData: BarAreaData(
-                                                show: true,
-                                                color: perfColor.withOpacity(
-                                                  0.1,
+                                                  ),
+                                                  belowBarData: BarAreaData(
+                                                    show: true,
+                                                    color: perfColor
+                                                        .withOpacity(0.1),
+                                                  ),
                                                 ),
-                                              ),
+                                              ],
                                             ),
-                                          ],
+                                          ),
                                         ),
-                                      ),
-                                    ),
-                                    if (_measureA != null && _measureB != null)
-                                      Positioned(
-                                        top: 0,
-                                        left: _leftReserved,
-                                        right: 0,
-                                        child: IgnorePointer(
-                                          child: _buildMeasureBox(),
-                                        ),
-                                      ),
-                                  ],
-                                );
-                              },
-                            ),
+                                        if (_measureA != null &&
+                                            _measureB != null)
+                                          Positioned(
+                                            top: 0,
+                                            left: _leftReserved,
+                                            right: 0,
+                                            child: IgnorePointer(
+                                              child: _buildMeasureBox(),
+                                            ),
+                                          ),
+                                      ],
+                                    );
+                                  },
+                                ),
                     ),
                   ),
                   Padding(

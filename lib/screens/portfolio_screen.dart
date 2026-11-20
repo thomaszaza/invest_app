@@ -234,6 +234,7 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
   }
 
   Future<void> _showManualPriceDialog(JsonMap inst) async {
+    if ((inst['ticker_isin'] ?? '').toString().trim().isNotEmpty) return;
     final TextEditingController priceController = TextEditingController();
 
     showDialog(
@@ -794,6 +795,8 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                       if (ownedQty <= 0) return const SizedBox.shrink();
 
                       final currentPrice = _livePrices[inst['name']];
+                      final bool canEditManualPrice =
+                          (inst['ticker_isin'] ?? '').toString().trim().isEmpty;
 
                       return Card(
                         color: const Color(0xFF1C1C1E),
@@ -833,14 +836,15 @@ class _PortfolioScreenState extends State<PortfolioScreen> {
                                   fontSize: 16,
                                 ),
                               ),
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.edit,
-                                  color: Colors.white38,
-                                  size: 18,
+                              if (canEditManualPrice)
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.edit,
+                                    color: Colors.white38,
+                                    size: 18,
+                                  ),
+                                  onPressed: () => _showManualPriceDialog(inst),
                                 ),
-                                onPressed: () => _showManualPriceDialog(inst),
-                              ),
                             ],
                           ),
                         ),
