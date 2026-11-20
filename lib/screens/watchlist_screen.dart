@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
+import '../utils/range_utils.dart';
 
 class WatchlistScreen extends StatefulWidget {
   const WatchlistScreen({super.key});
@@ -15,10 +17,23 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
   bool _isLoading = true;
   List _watchlist = [];
 
+  String _perfRange = '1D'; // plage de performance par défaut
+  Map<String, double> _refPrices = {};
+
   @override
   void initState() {
     super.initState();
     _loadWatchlist();
+  }
+
+  Future<void> _loadReferences() async {
+    if (_watchlist.isEmpty) return;
+    final requested = _perfRange;
+    final refs = await HistoricalPrices.fetch(supabase, _watchlist, requested);
+    // ignore le résultat si la plage a changé entre-temps
+    if (mounted && requested == _perfRange) {
+      setState(() => _refPrices = refs);
+    }
   }
 
   Future<void> _loadWatchlist() async {
@@ -39,6 +54,8 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           _isLoading = false;
         });
       }
+
+      _loadReferences();
 
       final List<Future<void>> futures = list.map((inst) async {
         final String isin = inst['ticker_isin'] ?? '';
@@ -92,6 +109,28 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
     }
   }
 
+  /// Retire de la watchlist (l'instrument reste en base : il peut être en portefeuille)
+  Future<void> _removeFromWatchlist(Map inst) async {
+    try {
+      await supabase
+          .from('instruments')
+          .update({'is_watchlist': false, 'watchlist_position': null}).eq(
+              'id', inst['id']);
+      if (mounted) {
+        setState(() => _watchlist.removeWhere((i) => i['id'] == inst['id']));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Erreur de suppression : $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   Future<void> _showManualPriceDialog(Map<String, dynamic> inst) async {
     final TextEditingController priceController = TextEditingController();
 
@@ -137,6 +176,7 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
                 }, onConflict: 'instrument_id,date');
 
                 PriceCache.set(inst['id'].toString(), newPrice);
+                HistoricalPrices.clearCache();
 
                 if (context.mounted) {
                   Navigator.pop(context);
@@ -162,6 +202,164 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildList() {
+    return RefreshIndicator(
+      onRefresh: _loadWatchlist,
+      color: Colors.greenAccent,
+      backgroundColor: const Color(0xFF1C1C1E),
+      child: ReorderableListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        itemCount: _watchlist.length,
+        onReorder: _onReorder,
+        buildDefaultDragHandles: false,
+        proxyDecorator: (child, index, animation) {
+          return Material(color: Colors.transparent, child: child);
+        },
+        itemBuilder: (context, index) {
+          final inst = _watchlist[index];
+          final double? price = inst['currentPrice'];
+          final String isin = (inst['isin'] ?? '').toString();
+          final String category = (inst['category'] ?? '').toString();
+
+          final double? ref = _refPrices[inst['id'].toString()];
+          final double? perfPct = (price != null && ref != null && ref > 0)
+              ? (price - ref) / ref * 100
+              : null;
+
+          return ReorderableDelayedDragStartListener(
+            key: ValueKey(inst['id']),
+            index: index,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Slidable(
+                key: ValueKey('slide_${inst['id']}'),
+                endActionPane: ActionPane(
+                  motion: const DrawerMotion(),
+                  extentRatio: 0.28,
+                  children: [
+                    SlidableAction(
+                      onPressed: (_) => _removeFromWatchlist(inst),
+                      backgroundColor: Colors.redAccent,
+                      foregroundColor: Colors.white,
+                      icon: Icons.delete_outline,
+                      label: 'Supprimer',
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ],
+                ),
+                child: Card(
+                  color: const Color(0xFF1C1C1E),
+                  margin: EdgeInsets.zero,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => InstrumentPager(
+                            instruments: _watchlist,
+                            initialIndex: index,
+                          ),
+                        ),
+                      );
+                      _loadWatchlist();
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(10.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  inst['name'] ?? '',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                  ),
+                                ),
+                                if (isin.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  Text(isin,
+                                      style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13)),
+                                ],
+                                if (category.isNotEmpty) ...[
+                                  const SizedBox(height: 3),
+                                  Text(category,
+                                      style: const TextStyle(
+                                          color: Colors.white54,
+                                          fontSize: 13)),
+                                ],
+                              ],
+                            ),
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                price != null
+                                    ? "${price.toStringAsFixed(2)} €"
+                                    : "-- €",
+                                style: TextStyle(
+                                  color: price != null
+                                      ? Colors.white
+                                      : Colors.white54,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              PerfBadge(
+                                label: _perfRange,
+                                pct: perfPct,
+                                filled: true,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(width: 10),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                icon: const Icon(Icons.edit,
+                                    color: Colors.white38, size: 19),
+                                onPressed: () => _showManualPriceDialog(inst),
+                              ),
+                              const SizedBox(width: 10),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                icon: const Icon(Icons.notifications_none,
+                                    color: Colors.white38, size: 20),
+                                onPressed: () =>
+                                    showCreateAlertDialog(context, inst),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -196,155 +394,37 @@ class _WatchlistScreenState extends State<WatchlistScreen> {
           ),
         ],
       ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator(color: Colors.white))
-          : _watchlist.isEmpty
-              ? const Center(
-                  child: Text(
-                    "Aucune valeur suivie pour l'instant",
-                    style: TextStyle(color: Colors.white54),
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _loadWatchlist,
-                  color: Colors.greenAccent,
-                  backgroundColor: const Color(0xFF1C1C1E),
-                  child: ReorderableListView.builder(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
-                    ),
-                    itemCount: _watchlist.length,
-                    onReorder: _onReorder,
-                    buildDefaultDragHandles: false,
-                    proxyDecorator: (child, index, animation) {
-                      return Material(
-                        color: Colors.transparent,
-                        child: child,
-                      );
-                    },
-                    itemBuilder: (context, index) {
-                      final inst = _watchlist[index];
-                      final double? price = inst['currentPrice'];
-                      final String isin = (inst['isin'] ?? '').toString();
-                      final String category =
-                          (inst['category'] ?? '').toString();
-
-                      return ReorderableDelayedDragStartListener(
-                        key: ValueKey(inst['id']),
-                        index: index,
-                        child: Card(
-                          color: const Color(0xFF1C1C1E),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          margin: const EdgeInsets.only(bottom: 6),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(10),
-                            onTap: () async {
-                              await Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (context) => InstrumentDetailScreen(
-                                      instrument: inst),
-                                ),
-                              );
-                              _loadWatchlist();
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.all(10.0),
-                              child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          inst['name'] ?? '',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            color: Colors.white,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                        if (isin.isNotEmpty) ...[
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            isin,
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 13,
-                                            ),
-                                          ),
-                                        ],
-                                        if (category.isNotEmpty) ...[
-                                          const SizedBox(height: 3),
-                                          Text(
-                                            category,
-                                            style: const TextStyle(
-                                              color: Colors.white54,
-                                              fontSize: 13,
-                                              
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(
-                                        price != null
-                                            ? "${price.toStringAsFixed(2)} €"
-                                            : "-- €",
-                                        style: TextStyle(
-                                          color: price != null
-                                              ? Colors.greenAccent
-                                              : Colors.white54,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 16,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      IconButton(
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        icon: const Icon(
-                                          Icons.edit,
-                                          color: Colors.white38,
-                                          size: 19,
-                                        ),
-                                        onPressed: () =>
-                                            _showManualPriceDialog(inst),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      IconButton(
-                                        padding: EdgeInsets.zero,
-                                        constraints: const BoxConstraints(),
-                                        icon: const Icon(
-                                          Icons.notifications_none,
-                                          color: Colors.white38,
-                                          size: 20,
-                                        ),
-                                        onPressed: () =>
-                                            showCreateAlertDialog(context, inst),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
+      body: Column(
+        children: [
+          const SizedBox(height: 6),
+          PerfRangeBar(
+            ranges: PerfRange.watchlistRanges,
+            selected: _perfRange,
+            onSelected: (r) {
+              if (r == _perfRange) return;
+              setState(() {
+                _perfRange = r;
+                _refPrices = {};
+              });
+              _loadReferences();
+            },
+          ),
+          const SizedBox(height: 6),
+          Expanded(
+            child: _isLoading
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.white))
+                : _watchlist.isEmpty
+                    ? const Center(
+                        child: Text(
+                          "Aucune valeur suivie pour l'instant",
+                          style: TextStyle(color: Colors.white54),
                         ),
-                      );
-                    },
-                  ),
-                ),
+                      )
+                    : _buildList(),
+          ),
+        ],
+      ),
     );
   }
 }

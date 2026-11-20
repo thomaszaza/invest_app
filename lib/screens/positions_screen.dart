@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../main.dart';
+import '../utils/range_utils.dart';
 
 class PositionsScreen extends StatefulWidget {
   const PositionsScreen({super.key});
@@ -22,10 +23,27 @@ class _PositionsScreenState extends State<PositionsScreen> {
   double _totalPortfolioValue = 0.0;
   double _totalInvestedValue = 0.0;
 
+  // Plage de performance : par défaut vs PRU
+  String _perfRange = PerfRange.pru;
+  Map<String, double> _refPrices = {};
+
   @override
   void initState() {
     super.initState();
     _loadPositions();
+  }
+
+  Future<void> _loadReferences() async {
+    if (_perfRange == PerfRange.pru || _allPositions.isEmpty) return;
+    final requested = _perfRange;
+    final refs = await HistoricalPrices.fetch(
+      supabase,
+      _allPositions,
+      requested,
+    );
+    if (mounted && requested == _perfRange) {
+      setState(() => _refPrices = refs);
+    }
   }
 
   void _filterPositions() {
@@ -99,6 +117,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
         setState(() => _isLoading = false);
       }
 
+      _loadReferences();
+
       List<FutureVoid> fetchFutures = _allPositions.map((pos) async {
         try {
           double? livePrice = await PriceService.fetchLivePrice(
@@ -118,7 +138,8 @@ class _PositionsScreenState extends State<PositionsScreen> {
                 pos['currentPrice'] = livePrice;
                 pos['totalValue'] = newTotalValue;
 
-                if (_selectedAccount == 'Tous' ||
+                // Correctif : 'Tous' ne correspondait jamais
+                if (_selectedAccount == 'Tous les comptes' ||
                     _selectedAccount == pos['account']) {
                   _totalPortfolioValue =
                       _totalPortfolioValue - oldTotalValue + newTotalValue;
@@ -272,14 +293,28 @@ class _PositionsScreenState extends State<PositionsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bool pruMode = _perfRange == PerfRange.pru;
     double globalPerfPct = 0.0;
     double globalPerfAbs = 0.0;
 
-    if (!_totalPortfolioValue.isNaN && !_totalInvestedValue.isNaN) {
-      globalPerfAbs = _totalPortfolioValue - _totalInvestedValue;
-      if (_totalInvestedValue > 0.001) {
-        globalPerfPct = (globalPerfAbs / _totalInvestedValue) * 100;
+    if (pruMode) {
+      if (!_totalPortfolioValue.isNaN && !_totalInvestedValue.isNaN) {
+        globalPerfAbs = _totalPortfolioValue - _totalInvestedValue;
+        if (_totalInvestedValue > 0.001) {
+          globalPerfPct = (globalPerfAbs / _totalInvestedValue) * 100;
+        }
       }
+    } else {
+      double refValue = 0, curValue = 0;
+      for (final pos in _positions) {
+        final ref = _refPrices[pos['id'].toString()];
+        final cur = pos['currentPrice'] as double?;
+        if (ref == null || cur == null) continue;
+        refValue += ref * pos['quantity'];
+        curValue += cur * pos['quantity'];
+      }
+      globalPerfAbs = curValue - refValue;
+      if (refValue > 0.001) globalPerfPct = globalPerfAbs / refValue * 100;
     }
 
     Color globalColor = globalPerfAbs >= 0
@@ -354,14 +389,28 @@ class _PositionsScreenState extends State<PositionsScreen> {
                               overflow: TextOverflow.ellipsis,
                             ),
                             const SizedBox(height: 6),
-                            Text(
-                              "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
-                              style: TextStyle(
-                                color: globalColor,
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                              ),
-                              textAlign: TextAlign.left,
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    "$globalSign${globalPerfAbs.toStringAsFixed(2)} € ($globalSign${globalPerfPct.toStringAsFixed(2)}%)",
+                                    style: TextStyle(
+                                      color: globalColor,
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  pruMode ? "vs PRU" : "sur $_perfRange",
+                                  style: const TextStyle(
+                                    color: Colors.white38,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -409,6 +458,20 @@ class _PositionsScreenState extends State<PositionsScreen> {
                     ],
                   ),
                 ),
+                // Sélecteur de plage sous la sélection de compte
+                PerfRangeBar(
+                  ranges: PerfRange.positionsRanges,
+                  selected: _perfRange,
+                  onSelected: (r) {
+                    if (r == _perfRange) return;
+                    setState(() {
+                      _perfRange = r;
+                      _refPrices = {};
+                    });
+                    _loadReferences();
+                  },
+                ),
+                const SizedBox(height: 6),
                 Expanded(
                   child: RefreshIndicator(
                     onRefresh: _loadPositions,
@@ -423,26 +486,28 @@ class _PositionsScreenState extends State<PositionsScreen> {
                       itemCount: _positions.length,
                       itemBuilder: (context, index) {
                         final pos = _positions[index];
-                        double currentPrice = pos['currentPrice'] ?? 0.0;
-                        double pru = pos['pru'];
+                        final double? currentPrice = pos['currentPrice'];
+                        final double pru = pos['pru'];
+                        final double qty = pos['quantity'];
 
-                        Color valueColor = Colors.white;
-                        String perfText = "";
-
-                        if (currentPrice > 0 &&
-                            pru > 0 &&
+                        // Référence : PRU ou prix historique de la plage
+                        final double? ref = pruMode
+                            ? pru
+                            : _refPrices[pos['id'].toString()];
+                        double? perfPct;
+                        double? perfAbs;
+                        if (currentPrice != null &&
                             !currentPrice.isNaN &&
-                            !pru.isNaN) {
-                          double perfRatio = ((currentPrice - pru) / pru) * 100;
-                          String sign = perfRatio >= 0 ? "+" : "";
-                          perfText = "$sign${perfRatio.toStringAsFixed(2)}%";
-
-                          if (currentPrice > pru) {
-                            valueColor = Colors.greenAccent;
-                          } else if (currentPrice < pru) {
-                            valueColor = Colors.redAccent;
-                          }
+                            ref != null &&
+                            ref > 0) {
+                          perfPct = (currentPrice - ref) / ref * 100;
+                          perfAbs = (currentPrice - ref) * qty;
                         }
+                        final Color valueColor = perfPct == null
+                            ? Colors.white
+                            : (perfPct >= 0
+                                  ? Colors.greenAccent
+                                  : Colors.redAccent);
 
                         return Card(
                           color: const Color(0xFF1C1C1E),
@@ -455,8 +520,10 @@ class _PositionsScreenState extends State<PositionsScreen> {
                             onTap: () => Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) =>
-                                    InstrumentDetailScreen(instrument: pos),
+                                builder: (context) => InstrumentPager(
+                                  instruments: _positions,
+                                  initialIndex: index,
+                                ),
                               ),
                             ),
                             child: Padding(
@@ -480,7 +547,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                         ),
                                         const SizedBox(height: 6),
                                         Text(
-                                          "Qté: ${pos['quantity'].toStringAsFixed(2)}",
+                                          "Qté: ${qty.toStringAsFixed(2)}",
                                           style: const TextStyle(
                                             color: Colors.white54,
                                             fontSize: 13,
@@ -494,7 +561,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                           ),
                                         ),
                                         Text(
-                                          pos['currentPrice'] != null
+                                          currentPrice != null
                                               ? "Actuel: ${currentPrice.toStringAsFixed(2)} €"
                                               : "Non coté",
                                           style: const TextStyle(
@@ -509,7 +576,7 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                     crossAxisAlignment: CrossAxisAlignment.end,
                                     children: [
                                       Text(
-                                        pos['currentPrice'] != null
+                                        currentPrice != null
                                             ? "${pos['totalValue'].toStringAsFixed(2)} €"
                                             : "-- €",
                                         style: TextStyle(
@@ -519,23 +586,18 @@ class _PositionsScreenState extends State<PositionsScreen> {
                                         ),
                                       ),
                                       const SizedBox(height: 6),
-                                      if (perfText.isNotEmpty)
-                                        Text(
-                                          perfText,
-                                          style: TextStyle(
-                                            color: valueColor,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      if (currentPrice > 0 && pru > 0) ...[
+                                      // PRU = badge contour / plage = badge rempli
+                                      PerfBadge(
+                                        label: pruMode ? 'PRU' : _perfRange,
+                                        pct: perfPct,
+                                        filled: !pruMode,
+                                      ),
+                                      if (perfAbs != null) ...[
                                         const SizedBox(height: 2),
                                         Text(
-                                          "PV : ${((currentPrice - pru) * pos['quantity']) >= 0 ? '+' : ''}${((currentPrice - pru) * pos['quantity']).toStringAsFixed(2)} €",
+                                          "${pruMode ? 'PV' : 'Δ'} : ${perfAbs >= 0 ? '+' : ''}${perfAbs.toStringAsFixed(2)} €",
                                           style: TextStyle(
-                                            color: (currentPrice - pru) >= 0
-                                                ? Colors.greenAccent
-                                                : Colors.redAccent,
+                                            color: valueColor,
                                             fontSize: 13,
                                             fontWeight: FontWeight.bold,
                                           ),

@@ -4,6 +4,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:intl/intl.dart';
 
 import '../services/price_service.dart';
+import '../utils/range_utils.dart'; // [NEW]
 
 class InstrumentDetailScreen extends StatefulWidget {
   final JsonMap instrument;
@@ -17,7 +18,8 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   bool _isLoading = true;
   bool _isChartLoading = false;
 
-  String _selectedPeriod = 'YTD';
+  // [NEW] dernière plage choisie (1M au démarrage de l'app)
+  String _selectedPeriod = ChartRangeStore.value;
   final List<String> _periods = ['1D', '1W', '1M', '3M', 'YTD', '1A', 'ALL'];
   List<FlSpot> _spots = [];
   List<String> _dates = [];
@@ -41,9 +43,19 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
   @override
   void initState() {
     super.initState();
+    if (!_periods.contains(_selectedPeriod)) _selectedPeriod = '1M'; // [NEW]
     _dividendFuture = _fetchDividendData();
     _fundamentalsFuture = _fetchFundamentalsData();
     _loadHistory(isInitial: true);
+  }
+
+  // [NEW] libère le verrou du swipe si la page disparaît pendant un toucher
+  @override
+  void dispose() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      PagerLock.locked.value = false;
+    });
+    super.dispose();
   }
 
   // ---------------------------------------------------------------
@@ -74,6 +86,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     _pointers.clear();
     _measureA = null;
     _measureB = null;
+    PagerLock.locked.value = false; // [NEW]
   }
 
   Widget _buildMeasureBox() {
@@ -821,7 +834,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
     );
 
     priceController.dispose();
-    if (changed && mounted) _loadHistory(isInitial: true);
+    if (changed && mounted) {
+      HistoricalPrices.clearCache(); // [NEW] les perfs des listes doivent se recalculer
+      _loadHistory(isInitial: true);
+    }
   }
 
   Future<JsonMap?> _fetchDividendData() async {
@@ -1085,6 +1101,10 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                                   } else {
                                     _pointers[e.pointer] = e.localPosition;
                                   }
+                                  // [NEW] verrouille le swipe entre fiches
+                                  // tant qu'un doigt est sur le graphique
+                                  PagerLock.locked.value = _pointers.isNotEmpty;
+
                                   // Un seul doigt : on laisse fl_chart gérer
                                   // le tooltip, pas besoin de reconstruire.
                                   if (_pointers.length < 2 && before < 2) {
@@ -1377,6 +1397,7 @@ class _InstrumentDetailScreenState extends State<InstrumentDetailScreen> {
                         return GestureDetector(
                           onTap: () {
                             if (_selectedPeriod != period) {
+                              ChartRangeStore.value = period; // [NEW]
                               setState(() {
                                 _selectedPeriod = period;
                                 _clearMeasure();
